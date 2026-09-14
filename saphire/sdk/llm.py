@@ -165,7 +165,7 @@ class MockLLM:
         visible_text = "\n".join(m.content for m in visible if m.role in (Role.user, Role.tool))
         done_calls = [tc for m in messages if m.role == Role.assistant for tc in m.tool_calls]
         tool_outputs: list[dict] = []
-        for m in messages:
+        for m in visible:
             if m.role == Role.tool:
                 try:
                     tool_outputs.append(json.loads(m.content))

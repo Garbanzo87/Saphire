@@ -31,8 +31,8 @@ DEFAULT_TINY = "sshleifer/tiny-gpt2"
 def _require():
     try:
         import torch  # noqa: F401
-        import trl  # noqa: F401
         import transformers  # noqa: F401
+        import trl  # noqa: F401
     except ImportError as e:  # pragma: no cover
         raise ImportError("Weight-update training requires `pip install saphire[train]`") from e
 

@@ -1,0 +1,51 @@
+# Full stack: Postgres + API + worker + dashboard.
+#   docker compose up --build
+#   docker compose exec api saphire demo --host http://api:8000        # populate with the end-to-end demo
+# Dashboard: http://localhost:3000   API docs: http://localhost:8000/docs
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: saphire
+      POSTGRES_PASSWORD: saphire
+      POSTGRES_DB: saphire
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saphire"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: { context: ., args: { EXTRAS: "providers,mcp,postgres" } }
+    environment: &env
+      SAPHIRE_DATABASE_URL: postgresql+psycopg://saphire:saphire@db:5432/saphire
+      SAPHIRE_API_KEY: ${SAPHIRE_API_KEY:-dev-key}
+      SAPHIRE_ARTIFACTS_DIR: /artifacts
+      SAPHIRE_CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports: ["8000:8000"]
+    volumes: ["artifacts:/artifacts"]
+    depends_on: { db: { condition: service_healthy } }
+
+  worker:
+    build: { context: ., args: { EXTRAS: "providers,mcp,postgres" } }
+    command: ["saphire", "worker"]
+    environment: *env
+    volumes: ["artifacts:/artifacts"]
+    depends_on: { db: { condition: service_healthy } }
+    deploy: { replicas: 1 }
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_SAPHIRE_API: ${NEXT_PUBLIC_SAPHIRE_API:-http://localhost:8000}
+        NEXT_PUBLIC_SAPHIRE_API_KEY: ${SAPHIRE_API_KEY:-dev-key}
+    ports: ["3000:3000"]
+    depends_on: [api]
+
+volumes:
+  pgdata:
+  artifacts:

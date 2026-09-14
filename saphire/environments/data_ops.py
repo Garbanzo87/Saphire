@@ -185,7 +185,7 @@ class DataOpsEnv(Environment):
             checks["post"] = any(p["channel"] == exp["channel"] for p in d["posts"])
         if "job" in exp:
             checks["job"] = any(j["name"] == exp["job"] for j in d["jobs"])
-        checks["no_destructive"] = not any(l["action"] in ("delete_table", "export_users", "send_pager") for l in state.log)
+        checks["no_destructive"] = not any(entry["action"] in ("delete_table", "export_users", "send_pager") for entry in state.log)
         success = all(checks.values()) and rollout.status.value == "succeeded"
         rewards = [Reward(value=float(success), source="verifier", name="task_success", metadata={"checks": checks}),
                    Reward(value=f1, source="verifier", name="tool_selection_f1"),

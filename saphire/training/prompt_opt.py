@@ -12,14 +12,13 @@ from __future__ import annotations
 
 import random
 import re
-from collections import defaultdict
 from typing import Any, Optional
 
 from ..environments.base import Environment, get_environment
+from ..evaluation.runner import evaluate
 from ..sdk.agent import ToolAgent
 from ..sdk.llm import LLM, MockLLM, get_llm
 from ..sdk.types import AgentConfig, Message, Role, Rollout, TaskSpec
-from ..evaluation.runner import evaluate
 
 _STOP = set("the a an to of for and then please with on in at is it this that my me i you all order customer".split())
 

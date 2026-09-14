@@ -144,7 +144,7 @@ class ToolRegistry:
 
 def _run_sync(coro):
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
     # already inside an event loop: run in a fresh thread

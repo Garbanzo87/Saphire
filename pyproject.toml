@@ -55,5 +55,9 @@ markers = ["slow: needs torch/TRL (deselect with -m 'not slow')"]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
-line-length = 110
+line-length = 140
 target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B006"]
+ignore = ["E501"]

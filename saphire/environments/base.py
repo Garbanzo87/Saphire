@@ -90,5 +90,7 @@ def list_environments() -> list[str]:
 
 
 def _ensure_builtin() -> None:
-    from . import support_desk  # noqa: F401  (registers on import)
-    from . import data_ops  # noqa: F401
+    from . import (
+        data_ops,  # noqa: F401
+        support_desk,  # noqa: F401  (registers on import)
+    )

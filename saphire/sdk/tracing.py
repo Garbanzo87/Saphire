@@ -108,7 +108,14 @@ def init(service_name: str = "saphire-agent", host: Optional[str] = None, api_ke
         exporter = SaphireSpanExporter(host, api_key, project)
     if exporter is not None:
         provider.add_span_processor(BatchSpanProcessor(exporter) if batch else SimpleSpanProcessor(exporter))
-    ot.set_tracer_provider(provider)
+    old = _state["provider"]
+    if old is not None:
+        old.shutdown()
+    if not _state.get("global_set"):
+        # OpenTelemetry only allows the global provider to be set once; third-party instrumentors
+        # (OpenInference etc.) attach to it. Saphire's own spans always use _state["provider"].
+        ot.set_tracer_provider(provider)
+        _state["global_set"] = True
     _state.update(provider=provider, exporter=exporter, service=service_name)
     return provider
 
@@ -116,7 +123,7 @@ def init(service_name: str = "saphire-agent", host: Optional[str] = None, api_ke
 def tracer():
     if _state["provider"] is None:
         init(exporter=InMemorySpanExporter(), batch=False)
-    return ot.get_tracer("saphire")
+    return _state["provider"].get_tracer("saphire")
 
 
 def _attr(v: Any) -> Any:

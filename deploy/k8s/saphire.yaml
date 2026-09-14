@@ -1,0 +1,93 @@
+# Minimal Kubernetes deployment: API (2 replicas) + workers (2 replicas, scale for throughput) + dashboard.
+# Provide Postgres (e.g. a managed instance) and set the secret below. Artifacts need a RWX volume
+# shared by api + workers (or point SAPHIRE_ARTIFACTS_DIR at an object-store mount).
+apiVersion: v1
+kind: Namespace
+metadata: { name: saphire }
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: saphire-secrets, namespace: saphire }
+type: Opaque
+stringData:
+  SAPHIRE_DATABASE_URL: postgresql+psycopg://saphire:CHANGEME@postgres:5432/saphire
+  SAPHIRE_API_KEY: CHANGEME
+  OPENAI_API_KEY: ""
+  ANTHROPIC_API_KEY: ""
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: saphire-artifacts, namespace: saphire }
+spec:
+  accessModes: [ReadWriteMany]
+  resources: { requests: { storage: 20Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: saphire-api, namespace: saphire }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: saphire-api } }
+  template:
+    metadata: { labels: { app: saphire-api } }
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/OWNER/saphire:latest
+          envFrom: [{ secretRef: { name: saphire-secrets } }]
+          env: [{ name: SAPHIRE_ARTIFACTS_DIR, value: /artifacts }]
+          ports: [{ containerPort: 8000 }]
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, periodSeconds: 30 }
+          resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { cpu: "1", memory: 2Gi } }
+          volumeMounts: [{ name: artifacts, mountPath: /artifacts }]
+      volumes: [{ name: artifacts, persistentVolumeClaim: { claimName: saphire-artifacts } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: saphire-api, namespace: saphire }
+spec:
+  selector: { app: saphire-api }
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: saphire-worker, namespace: saphire }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: saphire-worker } }
+  template:
+    metadata: { labels: { app: saphire-worker } }
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/OWNER/saphire:latest
+          command: ["saphire", "worker"]
+          envFrom: [{ secretRef: { name: saphire-secrets } }]
+          env: [{ name: SAPHIRE_ARTIFACTS_DIR, value: /artifacts }]
+          resources: { requests: { cpu: "1", memory: 2Gi }, limits: { cpu: "4", memory: 8Gi } }
+          # For weight-update training (sft/dpo/grpo) build the image with EXTRAS=train and add:
+          # resources.limits: { nvidia.com/gpu: 1 }
+          volumeMounts: [{ name: artifacts, mountPath: /artifacts }]
+      volumes: [{ name: artifacts, persistentVolumeClaim: { claimName: saphire-artifacts } }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: saphire-dashboard, namespace: saphire }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: saphire-dashboard } }
+  template:
+    metadata: { labels: { app: saphire-dashboard } }
+    spec:
+      containers:
+        - name: dashboard
+          image: ghcr.io/OWNER/saphire-dashboard:latest  # built with NEXT_PUBLIC_SAPHIRE_API=https://api.your-domain
+          ports: [{ containerPort: 3000 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: saphire-dashboard, namespace: saphire }
+spec:
+  selector: { app: saphire-dashboard }
+  ports: [{ port: 3000, targetPort: 3000 }]

@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0b0e14;
+  --panel: #12161f;
+  --panel-2: #181d28;
+  --border: #232a38;
+  --fg: #e6e9ef;
+  --muted: #8b94a7;
+  --accent: #5b9cff;
+}
+
+html { color-scheme: dark; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 13.5px;
+}
+code, pre, .mono { font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.panel { @apply rounded-lg border border-[var(--border)] bg-[var(--panel)]; }
+.tbl { @apply w-full text-left text-[13px]; }
+.tbl th { @apply px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)] border-b border-[var(--border)] whitespace-nowrap; }
+.tbl td { @apply px-3 py-2 border-b border-[var(--border)] align-top; }
+.tbl tbody tr:hover { background: var(--panel-2); }
+.input { @apply rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-[13px] text-[var(--fg)] outline-none focus:border-[var(--accent)]; }
+.btn { @apply rounded-md border border-[var(--border)] bg-[var(--panel-2)] px-3 py-1.5 text-[13px] font-medium hover:border-[var(--accent)] disabled:opacity-50 disabled:cursor-not-allowed; }
+.btn-primary { @apply bg-[var(--accent)] border-[var(--accent)] text-white hover:brightness-110; }
+.link { @apply text-[var(--accent)] hover:underline; }
+.label { @apply text-[11px] uppercase tracking-wide text-[var(--muted)]; }
