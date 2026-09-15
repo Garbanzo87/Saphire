@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from ..environments.base import get_environment
 from ..evaluation.gates import GatePolicy, evaluate_gate
 from ..evaluation.runner import EvalResult, evaluate
-from ..sdk.agent import ToolAgent
+from ..sdk.multi_agent import build_agent
 from ..sdk.types import AgentConfig, Rollout, TaskSpec
 from ..signals.generate import export_jsonl, grpo_prompts, preference_pairs, sft_examples, step_rewards
 from ..signals.judges import make_judge
@@ -107,9 +107,10 @@ def run_eval(db: Session, job: D.Job) -> dict[str, Any]:
         if done["n"] % 10 == 0:
             log(f"{done['n']}/{len(tasks) * run.k} rollouts", 0.05 + 0.85 * done["n"] / (len(tasks) * run.k))
 
-    res: EvalResult = evaluate(ToolAgent(cfg), tasks, k=run.k, suite=run.suite, judge=judge, on_rollout=_cb,
+    res: EvalResult = evaluate(build_agent(cfg), tasks, k=run.k, suite=run.suite, judge=judge, on_rollout=_cb,
                                concurrency=int(job.params.get("concurrency", 1)))
     run.metrics, run.by_family, run.by_env, run.by_difficulty = res.metrics, res.by_family, res.by_env, res.by_difficulty
+    run.by_role = res.by_role
     run.n_tasks, run.status, run.finished_at = res.n_tasks, "succeeded", time.time()
     db.commit()
     S.record_metrics(db, project, agent_row, res.metrics, tags={"suite": run.suite, "eval_run_id": run.id, "dataset_id": ds.id})
@@ -174,7 +175,21 @@ def run_training(db: Session, job: D.Job) -> dict[str, Any]:
     algo = run.algorithm
     log(f"training run {run.id}: {algo} from {cfg.name}/{cfg.version}", 0.02)
 
-    def _new_version(new_cfg: AgentConfig, origin: str, parent: D.Agent) -> D.Agent:
+    def _publish(new_cfg: AgentConfig, local_dir: Path) -> AgentConfig:
+        """Mirror artifacts to the configured object store and point the config at the remote URIs."""
+        from ..sdk.artifacts import publish_dir, remap
+
+        mapping = publish_dir(local_dir, f"{project.name}/{cfg.name}/{run.id}/{local_dir.name}")
+        if not mapping:
+            return new_cfg
+        new_cfg = new_cfg.model_copy(update={"tool_router": remap(new_cfg.tool_router, mapping), "exemplar_store": remap(new_cfg.exemplar_store, mapping)})
+        for r in new_cfg.roles.values():
+            r.tool_router, r.exemplar_store = remap(r.tool_router, mapping), remap(r.exemplar_store, mapping)
+        return new_cfg
+
+    def _new_version(new_cfg: AgentConfig, origin: str, parent: D.Agent, local_dir: Optional[Path] = None) -> D.Agent:
+        if local_dir is not None:
+            new_cfg = _publish(new_cfg, local_dir)
         new_cfg = new_cfg.model_copy(update={"version": S.next_version(db, project.id, cfg.name)})
         a = S.create_agent_version(db, project, new_cfg, parent_id=parent.id, origin=origin)
         log(f"created agent version {a.name}/{a.version} ({a.id})")
@@ -195,7 +210,7 @@ def run_training(db: Session, job: D.Job) -> dict[str, Any]:
             if rec["iteration"] == 0:
                 a = agent_row
             else:
-                a = _new_version(new_cfg, "online", state["last"])
+                a = _new_version(new_cfg, "online", state["last"], local_dir=Path(rec["artifact_dir"]))
                 state["last"] = a
             S.record_metrics(db, project, a, rec["eval"], tags={"training_run_id": run.id, "iteration": rec["iteration"]})
             run.history = (run.history or []) + [{k: v for k, v in rec.items() if k != "updates"} | {"agent_id": a.id, "updates": _slim(rec["updates"])}]
@@ -209,7 +224,8 @@ def run_training(db: Session, job: D.Job) -> dict[str, Any]:
                           learn_router=bool(p.get("learn_router", True)), learn_exemplars=bool(p.get("learn_exemplars", True)),
                           learn_prompt_every=int(p.get("learn_prompt_every", 0)), weight_update_every=int(p.get("weight_update_every", 0)),
                           weight_update=weight_fn, seed=int(p.get("seed", 0)), on_iteration=_on_iter, on_rollout=_on_rollout,
-                          eval_k=int(p.get("eval_k", 1)))
+                          eval_k=int(p.get("eval_k", 1)), optimize_roles=p.get("optimize_roles"),
+                          rollout_backend=p.get("rollout_backend"), rollout_workers=p.get("rollout_workers"))
         # the loop numbers versions v1..vN internally; align with the project's version counter
         loop.version_no = int(start_version[1:]) - 1
         hist = loop.run(iterations)
@@ -223,13 +239,20 @@ def run_training(db: Session, job: D.Job) -> dict[str, Any]:
             raise RuntimeError("no stored rollouts for this agent; run an evaluation or online loop first")
         envs = {e: get_environment(e) for e in {r.env_name for r in rollouts}}
         tools_by_env = {k: v.tools.specs() for k, v in envs.items()}
-        if algo == "router":
+        if algo in ("router", "exemplars") and cfg.is_multi_agent:
+            from ..training.multi_agent import train_roles
+
+            new_cfg, r = train_roles(cfg, rollouts, envs, art, roles=p.get("optimize_roles"), learn_router=algo == "router",
+                                     learn_exemplars=algo == "exemplars")
+            a = _new_version(new_cfg, algo, agent_row, local_dir=art)
+            run.output_agent_id, run.result = a.id, _slim(r)
+        elif algo == "router":
             r = train_router(rollouts, envs, art / "router")
-            a = _new_version(cfg.model_copy(update={"tool_router": r["artifact"], "router_top_k": int(p.get("router_top_k", cfg.router_top_k or 8))}), "router", agent_row)
+            a = _new_version(cfg.model_copy(update={"tool_router": r["artifact"], "router_top_k": int(p.get("router_top_k", cfg.router_top_k or 8))}), "router", agent_row, local_dir=art)
             run.output_agent_id, run.result = a.id, r
         elif algo == "exemplars":
             r = update_exemplars(rollouts, art / "exemplars.json")
-            a = _new_version(cfg.model_copy(update={"exemplar_store": r["artifact"], "exemplar_k": int(p.get("exemplar_k", 2))}), "exemplars", agent_row)
+            a = _new_version(cfg.model_copy(update={"exemplar_store": r["artifact"], "exemplar_k": int(p.get("exemplar_k", 2))}), "exemplars", agent_row, local_dir=art)
             run.output_agent_id, run.result = a.id, r
         else:
             task_ids = {r.task_id for r in rollouts}
@@ -238,9 +261,10 @@ def run_training(db: Session, job: D.Job) -> dict[str, Any]:
                 for t in ds.tasks:
                     if t["id"] in task_ids:
                         tasks[t["id"]] = TaskSpec.model_validate(t)
-            files = {"sft": export_jsonl(sft_examples(rollouts, tools_by_env), art / "sft.jsonl"),
-                     "dpo": export_jsonl(preference_pairs(rollouts, tools_by_env), art / "dpo.jsonl"),
-                     "grpo": export_jsonl(grpo_prompts(rollouts, tasks, tools_by_env), art / "grpo.jsonl"),
+            role = p.get("role")  # multi-agent: restrict datasets to one role's steps
+            files = {"sft": export_jsonl(sft_examples(rollouts, tools_by_env, role=role), art / "sft.jsonl"),
+                     "dpo": export_jsonl(preference_pairs(rollouts, tools_by_env, role=role), art / "dpo.jsonl"),
+                     "grpo": export_jsonl(grpo_prompts(rollouts, tasks, tools_by_env, role=role), art / "grpo.jsonl"),
                      "step_rewards": export_jsonl(step_rewards(rollouts), art / "step_rewards.jsonl")}
             counts = {k: sum(1 for _ in open(v)) for k, v in files.items()}
             log(f"signals: {counts}", 0.3)
@@ -300,6 +324,13 @@ def _make_weight_update(p: dict[str, Any], log: JobLog):
     return _fn
 
 
+@handler("retention")
+def run_retention_job(db: Session, job: D.Job) -> dict[str, Any]:
+    from .retention import run_retention
+
+    return run_retention(db, (job.params or {}).get("days"), dry_run=bool((job.params or {}).get("dry_run")))
+
+
 # ---------------------------------------------------------------------------
 # Worker
 # ---------------------------------------------------------------------------
@@ -336,11 +367,11 @@ def execute_job(job_id: str) -> None:
                     row = db.get(model, rid)
                     if row is not None:
                         row.status = "failed"
-        job.finished_at = time.time()
-        db.commit()
         from ..sdk import tracing
 
-        tracing.flush()
+        tracing.flush()  # spans must be persisted before the job is reported as finished
+        job.finished_at = time.time()
+        db.commit()
     finally:
         db.close()
 
@@ -349,6 +380,10 @@ def submit_job(db: Session, project_id: str, type_: str, params: dict[str, Any])
     job = D.Job(id=D.uid("job"), project_id=project_id, type=type_, params=params)
     db.add(job)
     db.commit()
+    from .auth import meter
+
+    proj = db.get(D.Project, project_id)
+    meter(db, proj.org_id if proj else None, "jobs", 1)
     if settings.inline_jobs:
         _run_inline(job.id)
     return job

@@ -1,0 +1,37 @@
+# Example verl launch config for GRPO on a Saphire environment (2 nodes x 8 GPUs). Not executed in CI (needs GPUs).
+# 1. Export prompts:  saphire export-verl --agent-name support-agent --out artifacts/verl      (or the `signals` training job)
+# 2. Start the reward/env server reachable from trainer nodes:  saphire env-server --port 8010
+# 3. python -m verl.trainer.main_ppo --config-path deploy --config-name verl_grpo
+algorithm:
+  adv_estimator: grpo
+data:
+  train_files: artifacts/verl/train.parquet
+  val_files: artifacts/verl/val.parquet
+  train_batch_size: 256
+  max_prompt_length: 2048
+  max_response_length: 256
+actor_rollout_ref:
+  model:
+    path: Qwen/Qwen2.5-7B-Instruct
+  actor:
+    optim: { lr: 1e-6 }
+    ppo_mini_batch_size: 64
+    use_kl_loss: true
+    kl_loss_coef: 0.001
+  rollout:
+    name: vllm
+    n: 8                      # group size for GRPO
+    tensor_model_parallel_size: 2
+    gpu_memory_utilization: 0.6
+custom_reward_function:
+  path: saphire/distributed/verl.py
+  name: compute_score          # uses SAPHIRE_ENV_SERVER (HTTP) when set, else in-process replay
+reward_model:
+  reward_manager: naive
+trainer:
+  n_gpus_per_node: 8
+  nnodes: 2
+  total_epochs: 3
+  logger: [console, wandb]
+  project_name: saphire
+  experiment_name: support-agent-grpo

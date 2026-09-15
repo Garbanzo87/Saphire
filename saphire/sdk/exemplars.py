@@ -25,22 +25,39 @@ class ExemplarStore:
         self._X: np.ndarray | None = None
 
     @staticmethod
-    def summarize(rollout: Rollout) -> dict:
-        calls = [{"tool": tc.name, "arguments": tc.arguments} for tc in rollout.tool_calls]
-        instr = next((m.content for s in rollout.steps[:1] for m in s.prompt_messages if m.role.value == "user"), "")
-        return {"instruction": instr, "calls": calls, "reward": rollout.total_reward, "rollout_id": rollout.id}
+    def summarize(rollout: Rollout, role: str | None = None) -> list[dict]:
+        """Compress a rollout into (instruction -> tool sequence) items.
 
-    def add_rollout(self, rollout: Rollout) -> bool:
+        Single-agent rollouts yield one item. With `role`, each delegation episode of that role (identified by the
+        task message the role received) yields one item, using only that role's steps."""
+        steps = [s for s in rollout.steps if role is None or s.role == role]
+        if not steps:
+            return []
+        if role is None:
+            calls = [{"tool": tc.name, "arguments": tc.arguments} for s in steps for tc in s.response.tool_calls]
+            instr = next((m.content for m in steps[0].prompt_messages if m.role.value == "user"), "")
+            return [{"instruction": instr, "calls": calls, "reward": rollout.total_reward, "rollout_id": rollout.id}]
+        episodes: dict[str, list] = {}
+        for s in steps:
+            task_msg = next((m.content for m in s.prompt_messages if m.role.value == "user"), "")
+            episodes.setdefault(task_msg.split("\n\nContext:")[0], []).extend(
+                {"tool": tc.name, "arguments": tc.arguments} for tc in s.response.tool_calls)
+        return [{"instruction": k, "calls": v, "reward": rollout.total_reward, "rollout_id": rollout.id, "role": role}
+                for k, v in episodes.items()]
+
+    def add_rollout(self, rollout: Rollout, role: str | None = None) -> bool:
         if rollout.total_reward < self.min_reward or not rollout.tool_calls:
             return False
-        item = self.summarize(rollout)
-        if any(i["instruction"] == item["instruction"] for i in self.items):
-            return False
-        self.items.append(item)
+        added = False
+        for item in self.summarize(rollout, role):
+            if not item["calls"] or any(i["instruction"] == item["instruction"] for i in self.items):
+                continue
+            self.items.append(item)
+            added = True
         if len(self.items) > self.max_items:
             self.items = self.items[-self.max_items:]
         self._X = None
-        return True
+        return added
 
     def _matrix(self) -> np.ndarray:
         if self._X is None:
@@ -74,7 +91,9 @@ class ExemplarStore:
 
     @classmethod
     def load(cls, path: str | Path) -> "ExemplarStore":
-        d = json.loads(Path(path).read_text())
+        from .artifacts import resolve
+
+        d = json.loads(Path(resolve(str(path))).read_text())
         s = cls(dim=d["dim"], max_items=d["max_items"], min_reward=d["min_reward"])
         s.items = d["items"]
         return s

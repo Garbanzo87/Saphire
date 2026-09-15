@@ -1,0 +1,72 @@
+{
+  "machine": {
+    "cpu_count": 2,
+    "platform": "Linux-6.18.44-fc-v33-x86_64-with-glibc2.39",
+    "python": "3.11.15"
+  },
+  "timestamp": "2026-09-15 10:31:44 UTC",
+  "rollouts": {
+    "n_rollouts": 224,
+    "local": {
+      "wall_s": 2.02,
+      "rollouts_per_min": 6708,
+      "task_success": 0.598
+    },
+    "thread": {
+      "wall_s": 1.32,
+      "rollouts_per_min": 10555,
+      "task_success": 0.594
+    },
+    "process": {
+      "wall_s": 1.62,
+      "rollouts_per_min": 8486,
+      "task_success": 0.558
+    },
+    "ray": {
+      "wall_s": 5.95,
+      "rollouts_per_min": 7809,
+      "task_success": 0.589
+    },
+    "multi_agent_local": {
+      "wall_s": 0.36,
+      "rollouts_per_min": 9519,
+      "steps_mean": 9.0
+    }
+  },
+  "db": {
+    "rollouts_inserted": 2000,
+    "insert_per_s": 265,
+    "list_query_p50_ms": 2.52,
+    "list_query_p95_ms": 3.21,
+    "db": "sqlite (WAL)"
+  },
+  "ingest": {
+    "requests": 200,
+    "spans": 4000,
+    "concurrency": 8,
+    "wall_s": 2.25,
+    "spans_per_s": 1780,
+    "req_per_s": 89.0,
+    "p50_ms": 77.3,
+    "p95_ms": 196.6,
+    "errors": 0
+  },
+  "api_reads": {
+    "/v1/traces": {
+      "p50_ms": 8.9,
+      "p95_ms": 10.3
+    },
+    "/v1/metrics/overview": {
+      "p50_ms": 7.6,
+      "p95_ms": 9.1
+    },
+    "/v1/agents": {
+      "p50_ms": 5.0,
+      "p95_ms": 5.9
+    },
+    "/v1/traces/{id}": {
+      "p50_ms": 5.8,
+      "p95_ms": 6.7
+    }
+  }
+}

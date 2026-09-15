@@ -25,6 +25,16 @@ def serve(host: str = "0.0.0.0", port: int = 8000, reload: bool = False, inline_
     uvicorn.run("saphire.server.main:app", host=host, port=port, reload=reload)
 
 
+@app.command("env-server")
+def env_server(host: str = "0.0.0.0", port: int = 8010):
+    """Standalone environment / reward server for remote RL trainers (verl, OpenRLHF, SkyRL)."""
+    import uvicorn
+
+    from .distributed.env_server import create_app
+
+    uvicorn.run(create_app(), host=host, port=port)
+
+
 @app.command()
 def worker(once: bool = False, poll: float = 1.0):
     """Start a background job worker (evaluations, training)."""
@@ -39,19 +49,33 @@ def worker(once: bool = False, poll: float = 1.0):
 @app.command("eval")
 def eval_cmd(suite: str = "full", model: str = "mock", n_per_env: int = 14, k: int = 1, seed: int = 0, top_k: int = 8,
              router: Optional[str] = None, exemplars: Optional[str] = None, judge: Optional[str] = None, concurrency: int = 1,
-             out: Optional[Path] = None, agent_json: Optional[Path] = None):
+             out: Optional[Path] = None, agent_json: Optional[Path] = None, multi_agent: bool = typer.Option(False, help="use the built-in orchestrator + specialists preset"),
+             distributed: Optional[str] = typer.Option(None, help="rollout backend: ray | process | thread"), workers: int = 0):
     """Evaluate an agent locally (no server needed) on a named suite."""
     from .evaluation.runner import evaluate
     from .evaluation.suites import build_suite
-    from .sdk.agent import ToolAgent
+    from .sdk.multi_agent import build_agent
     from .sdk.types import AgentConfig
     from .signals.judges import make_judge
 
     os.environ.setdefault("SAPHIRE_TRACING", "off")
-    cfg = AgentConfig.model_validate_json(agent_json.read_text()) if agent_json else AgentConfig(
-        model=model, router_top_k=top_k, tool_router=router, exemplar_store=exemplars)
+    if agent_json:
+        cfg = AgentConfig.model_validate_json(agent_json.read_text())
+    elif multi_agent:
+        from .environments.support_desk import multi_agent_config
+
+        cfg = multi_agent_config(model=model, router_top_k=top_k)
+    else:
+        cfg = AgentConfig(model=model, router_top_k=top_k, tool_router=router, exemplar_store=exemplars)
     tasks = build_suite(suite, n_per_env=n_per_env, seed=seed)
-    res = evaluate(ToolAgent(cfg), tasks, k=k, suite=suite, judge=make_judge(judge), concurrency=concurrency)
+    if distributed:
+        from .distributed.rollouts import evaluate_distributed
+
+        res = evaluate_distributed(cfg, tasks, k=k, backend=distributed, workers=workers or None, judge_model=judge, suite=suite)
+    else:
+        res = evaluate(build_agent(cfg), tasks, k=k, suite=suite, judge=make_judge(judge), concurrency=concurrency)
+    if res.by_role:
+        rprint({"by_role": res.by_role})
     _print_eval(res)
     if out:
         out.write_text(json.dumps(res.model_dump(), indent=2))
@@ -170,6 +194,52 @@ def demo(host: str = "http://localhost:8000", api_key: str = "dev-key", project:
             c.record_outcome(exp["id"], f"user-{i}", 1.0 if rng.random() < p else 0.0, a["variant"])
         rprint("experiment:", c.get(f"/experiments/{exp['id']}")["results"])
     rprint("[green]demo complete[/green]")
+
+
+@app.command()
+def bench(host: Optional[str] = typer.Option(None, help="running API to load-test (omit for offline benchmarks only)"), api_key: str = "dev-key",
+          out: Optional[Path] = None, quick: bool = False):
+    """Load / scale benchmarks with real numbers (rollout throughput per backend, persistence, ingest, API latency)."""
+    from .bench import main as _bench
+
+    _bench(host, api_key, out, quick)
+
+
+@app.command()
+def retention(days: Optional[int] = typer.Option(None, help="override SAPHIRE_RETENTION_DAYS / org settings"), dry_run: bool = False):
+    """Delete traces/spans/rollouts older than the retention window (per org). Schedule via cron / K8s CronJob."""
+    from .server import db as D
+    from .server.retention import run_retention
+
+    db = D.session()
+    try:
+        rprint(run_retention(db, days, dry_run=dry_run))
+    finally:
+        db.close()
+
+
+@app.command("create-org")
+def create_org_cmd(slug: str, name: Optional[str] = None, plan: str = "enterprise", owner_email: Optional[str] = None,
+                   allowed_domain: Optional[str] = None):
+    """Bootstrap an organization (and optionally its owner + SSO email domain) directly in the database."""
+    from .server import db as D
+    from .server.auth import create_api_key, upsert_user
+
+    db = D.session()
+    try:
+        org = D.ensure_org(db, slug, name or slug, plan=plan)
+        if allowed_domain:
+            org.settings = {**(org.settings or {}), "allowed_email_domains": [allowed_domain]}
+            db.commit()
+        if owner_email:
+            u = upsert_user(db, owner_email)
+            if db.query(D.Membership).filter_by(org_id=org.id, user_id=u.id).one_or_none() is None:
+                db.add(D.Membership(id=D.uid("mem"), org_id=org.id, user_id=u.id, role="owner"))
+                db.commit()
+        row, raw = create_api_key(db, org, "bootstrap admin key", role="admin", created_by="cli")
+        rprint({"org": org.slug, "plan": org.plan, "admin_api_key": raw, "note": "shown once"})
+    finally:
+        db.close()
 
 
 @app.command()

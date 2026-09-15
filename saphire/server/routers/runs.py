@@ -14,6 +14,7 @@ from ...evaluation import metrics as M
 from ...evaluation.gates import GatePolicy
 from .. import db as D
 from .. import jobs as J
+from ..auth import Principal, audit, check_quota, require
 from ..deps import get_or_404, get_project, require_api_key
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -32,9 +33,14 @@ class EvalIn(BaseModel):
 
 
 @router.post("/evals", status_code=201)
-def create_eval(body: EvalIn, project: D.Project = Depends(get_project), db: Session = Depends(D.get_db)):
+def create_eval(body: EvalIn, project: D.Project = Depends(get_project), p: Principal = Depends(require("write")), db: Session = Depends(D.get_db)):
     agent = get_or_404(db, D.Agent, body.agent_id)
     ds = get_or_404(db, D.Dataset, body.dataset_id)
+    if body.auto_promote and not p.can("deploy"):
+        raise HTTPException(403, "auto_promote requires the admin role")
+    org = db.get(D.Organization, project.org_id)
+    check_quota(db, org, "jobs_per_day")
+    check_quota(db, org, "rollouts_per_month", add=len(ds.tasks) * body.k)
     run = D.EvalRun(id=D.uid("eval"), project_id=project.id, agent_id=agent.id, dataset_id=ds.id, suite=ds.suite, k=body.k,
                     judge_model=body.judge_model, n_tasks=len(ds.tasks))
     db.add(run)
@@ -102,6 +108,7 @@ def create_training(body: TrainingIn, project: D.Project = Depends(get_project),
         raise HTTPException(400, "online training needs params.train_dataset_id and params.eval_dataset_id")
     if body.algorithm == "prompt_opt" and "train_dataset_id" not in body.params:
         raise HTTPException(400, "prompt_opt needs params.train_dataset_id")
+    check_quota(db, db.get(D.Organization, project.org_id), "jobs_per_day")
     run = D.TrainingRun(id=D.uid("train"), project_id=project.id, agent_id=agent.id, algorithm=body.algorithm, params=body.params)
     db.add(run)
     db.commit()
@@ -176,12 +183,13 @@ def list_deployments(project: D.Project = Depends(get_project), db: Session = De
 
 
 @router.post("/deployments/{deployment_id}/promote")
-def promote_deployment(deployment_id: str, db: Session = Depends(D.get_db)):
+def promote_deployment(deployment_id: str, p: Principal = Depends(require("deploy")), db: Session = Depends(D.get_db)):
     d = get_or_404(db, D.Deployment, deployment_id)
     a = get_or_404(db, D.Agent, d.agent_id)
     J.promote(db, d.project_id, a)
     d.promoted = d.active = True
     db.commit()
+    audit(db, p, "deployments.promote", "deployment", d.id, details={"agent_id": a.id, "version": a.version})
     return D.to_dict(d)
 
 

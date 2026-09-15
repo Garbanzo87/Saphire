@@ -16,6 +16,21 @@ class Settings(BaseSettings):
     worker_poll_s: float = 1.0
     default_project: str = "default"
     log_level: str = "info"
+    # --- auth / SSO ---
+    jwt_secret: str = "change-me-in-production"
+    jwt_ttl_s: int = 12 * 3600
+    dev_login: bool = False  # enable POST /v1/auth/dev-login (mint a JWT for any email) for local dev & tests
+    superadmin_emails: list[str] = []
+    oidc_issuer: str = ""  # e.g. https://accounts.google.com or https://login.microsoftonline.com/<tenant>/v2.0 or Okta
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_url: str = "http://localhost:8000/v1/auth/callback"
+    oidc_scopes: str = "openid email profile"
+    frontend_url: str = "http://localhost:3000"
+    # --- limits / retention ---
+    rate_limit_rpm: int = 0  # 0 = disabled; org.quotas.requests_per_minute overrides
+    retention_days: int = 0  # 0 = keep forever; `saphire retention` / retention job deletes older traces & rollouts
+    audit_request_bodies: bool = False  # store (redacted, truncated) request bodies in the audit log
 
     @property
     def artifacts_path(self) -> Path:

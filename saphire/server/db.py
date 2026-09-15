@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, Text, create_engine, event
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .config import settings
@@ -23,10 +23,94 @@ class Base(DeclarativeBase):
     pass
 
 
+class Organization(Base):
+    """Tenant. Every project, API key, membership, usage record and audit entry belongs to exactly one org."""
+
+    __tablename__ = "organizations"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    slug: Mapped[str] = mapped_column(String(100), unique=True)
+    plan: Mapped[str] = mapped_column(String(32), default="free")  # free | team | enterprise
+    quotas: Mapped[dict] = mapped_column(JSON, default=dict)  # e.g. {"rollouts_per_month": 5000, "jobs_per_day": 50, "requests_per_minute": 600}
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)  # {"allowed_email_domains": [...], "default_role": "member", "retention_days": 90}
+    created_at: Mapped[float] = mapped_column(Float, default=now)
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    sso_provider: Mapped[str] = mapped_column(String(64), default="")
+    sso_subject: Mapped[str] = mapped_column(String(320), default="")
+    is_superadmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[float] = mapped_column(Float, default=now)
+    last_login_at: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+
+class Membership(Base):
+    __tablename__ = "memberships"
+    __table_args__ = (UniqueConstraint("org_id", "user_id", name="uq_membership"),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(16), default="member")  # owner | admin | member | viewer
+    created_at: Mapped[float] = mapped_column(Float, default=now)
+
+
+class ApiKey(Base):
+    """Hashed API keys scoped to an org with a role. The raw key is shown once at creation."""
+
+    __tablename__ = "api_keys"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    prefix: Mapped[str] = mapped_column(String(16))
+    role: Mapped[str] = mapped_column(String(16), default="member")
+    created_by: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[float] = mapped_column(Float, default=now)
+    last_used_at: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    expires_at: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    revoked_at: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    actor_type: Mapped[str] = mapped_column(String(16))  # user | api_key | root | system
+    actor_id: Mapped[str] = mapped_column(String(64), default="")
+    actor_label: Mapped[str] = mapped_column(String(320), default="")
+    action: Mapped[str] = mapped_column(String(100), index=True)  # e.g. "agents.promote", "evals.create"
+    resource_type: Mapped[str] = mapped_column(String(64), default="")
+    resource_id: Mapped[str] = mapped_column(String(64), default="")
+    method: Mapped[str] = mapped_column(String(8), default="")
+    path: Mapped[str] = mapped_column(String(300), default="")
+    status_code: Mapped[int] = mapped_column(Integer, default=0)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[float] = mapped_column(Float, default=now, index=True)
+
+
+class UsageCounter(Base):
+    """Metered usage per org, metric and UTC day (rollouts, spans, tokens, jobs, api_requests)."""
+
+    __tablename__ = "usage_counters"
+    __table_args__ = (UniqueConstraint("org_id", "metric", "day", name="uq_usage"),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(64), index=True)
+    metric: Mapped[str] = mapped_column(String(48), index=True)
+    day: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
+    value: Mapped[float] = mapped_column(Float, default=0.0)
+
+
 class Project(Base):
     __tablename__ = "projects"
+    __table_args__ = (UniqueConstraint("org_id", "name", name="uq_project_org_name"),)
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    name: Mapped[str] = mapped_column(String(200), unique=True)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[float] = mapped_column(Float, default=now)
 
@@ -152,6 +236,7 @@ class EvalRun(Base):
     by_family: Mapped[dict] = mapped_column(JSON, default=dict)
     by_env: Mapped[dict] = mapped_column(JSON, default=dict)
     by_difficulty: Mapped[dict] = mapped_column(JSON, default=dict)
+    by_role: Mapped[dict] = mapped_column(JSON, default=dict)
     n_tasks: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[float] = mapped_column(Float, default=now)
     finished_at: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -214,6 +299,13 @@ class Deployment(Base):
 
 
 Index("ix_metric_points_lookup", MetricPoint.project_id, MetricPoint.agent_name, MetricPoint.name)
+Index("ix_rollouts_project_created", RolloutRow.project_id, RolloutRow.created_at)
+Index("ix_traces_project_start", Trace.project_id, Trace.start_time)
+Index("ix_traces_project_created", Trace.project_id, Trace.created_at)
+Index("ix_spans_trace_start", Span.trace_id, Span.start_time)
+Index("ix_scores_project_name", Score.project_id, Score.name)
+Index("ix_audit_org_created", AuditLog.org_id, AuditLog.created_at)
+Index("ix_jobs_status_created", Job.status, Job.created_at)
 
 # ---------------------------------------------------------------------------
 _engine = None
@@ -264,13 +356,34 @@ def get_db() -> Iterator[Session]:
         db.close()
 
 
-def ensure_project(db: Session, name: str) -> Project:
-    p = db.query(Project).filter_by(name=name).one_or_none()
-    if p is None:
-        p = Project(id=uid("proj"), name=name)
-        db.add(p)
+DEFAULT_ORG_SLUG = "default"
+
+
+def _get_or_create(db: Session, model, filters: dict[str, Any], defaults: dict[str, Any]):
+    """Race-safe get-or-create (concurrent first requests may both try to insert)."""
+    from sqlalchemy.exc import IntegrityError
+
+    obj = db.query(model).filter_by(**filters).one_or_none()
+    if obj is not None:
+        return obj
+    try:
+        with db.begin_nested():
+            obj = model(**filters, **defaults)
+            db.add(obj)
         db.commit()
-    return p
+        return obj
+    except IntegrityError:
+        db.rollback()
+        return db.query(model).filter_by(**filters).one()
+
+
+def ensure_org(db: Session, slug: str = DEFAULT_ORG_SLUG, name: Optional[str] = None, plan: str = "enterprise") -> Organization:
+    return _get_or_create(db, Organization, {"slug": slug}, {"id": uid("org"), "name": name or slug, "plan": plan, "quotas": {}, "settings": {}})
+
+
+def ensure_project(db: Session, name: str, org_id: Optional[str] = None) -> Project:
+    org_id = org_id or ensure_org(db).id
+    return _get_or_create(db, Project, {"name": name, "org_id": org_id}, {"id": uid("proj")})
 
 
 def to_dict(obj: Any) -> dict[str, Any]:

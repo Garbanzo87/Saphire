@@ -117,6 +117,7 @@ class Step(BaseModel):
     usage: Usage = Field(default_factory=Usage)
     latency_ms: float = 0.0
     exposed_tools: list[str] = Field(default_factory=list)  # tool names visible to the policy at this step
+    role: str = "main"  # which agent (in a multi-agent system) produced this step
     reward: Optional[float] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -212,8 +213,29 @@ class TaskSpec(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RoleConfig(BaseModel):
+    """One agent inside a multi-agent system (orchestrator or specialist).
+
+    Each role has its own policy surface (prompt, model, router, exemplars) and its own tool subset, so
+    it can be optimised independently ("selective optimisation") while the others stay frozen.
+    """
+
+    description: str = ""  # shown to the orchestrator as the hand-off tool description
+    system_prompt: Optional[str] = None  # None -> inherit the system-level prompt
+    model: Optional[str] = None  # None -> inherit
+    tool_names: list[str] = Field(default_factory=list)  # explicit subset of environment tools
+    tool_tags: list[str] = Field(default_factory=list)  # ... or by tag
+    tool_router: Optional[str] = None
+    router_top_k: int = 0
+    exemplar_store: Optional[str] = None
+    exemplar_k: int = 2
+    max_steps: int = 6
+    trainable: bool = True  # False -> frozen during selective optimisation
+    temperature: float = 0.0
+
+
 class AgentConfig(BaseModel):
-    """Everything that defines a deployable agent version."""
+    """Everything that defines a deployable agent version (single agent or multi-agent system)."""
 
     name: str = "agent"
     version: str = "v0"
@@ -225,4 +247,12 @@ class AgentConfig(BaseModel):
     router_top_k: int = 8  # how many tools to expose per step (0 = expose all)
     exemplar_store: Optional[str] = None  # artifact path of ExemplarStore
     exemplar_k: int = 2
+    # multi-agent: when `roles` is non-empty the agent is an orchestrator that hands off to role agents
+    roles: dict[str, RoleConfig] = Field(default_factory=dict)
+    orchestrator_prompt: Optional[str] = None
+    orchestrator_tools: list[str] = Field(default_factory=list)  # env tools the orchestrator may call directly
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def is_multi_agent(self) -> bool:
+        return bool(self.roles)

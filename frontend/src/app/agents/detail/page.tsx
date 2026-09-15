@@ -3,10 +3,56 @@ import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { Api, fetcher, q, type Agent, type EvalRun } from "@/lib/api";
+import { Api, fetcher, q, type Agent, type EvalRun, type RoleConfig } from "@/lib/api";
 import { ms, pct, ts } from "@/lib/format";
 import { JsonView } from "@/components/JsonView";
 import { Chip, DataState, ErrorBox, IdLink, PageHeader, Panel, Stat } from "@/components/ui";
+
+function RolesPanel({ roles, orchestratorPrompt, orchestratorTools }: { roles: Record<string, RoleConfig>; orchestratorPrompt?: string | null; orchestratorTools?: string[] }) {
+  const entries = Object.entries(roles);
+  return (
+    <Panel title={`Roles · ${entries.length}`} actions={<Chip status="agent">multi-agent</Chip>}>
+      <div className="space-y-3">
+        <div className="rounded-md border border-violet-500/30 bg-violet-500/5 p-3">
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-semibold">orchestrator</span>
+            <Chip status="agent">router</Chip>
+            {orchestratorTools && orchestratorTools.length > 0 && <span className="text-[12px] text-[var(--muted)]">tools: {orchestratorTools.join(", ")}</span>}
+          </div>
+          {orchestratorPrompt ? (
+            <pre className="mono mt-2 whitespace-pre-wrap rounded-md bg-[var(--bg)] p-2 text-[12px] leading-5">{orchestratorPrompt}</pre>
+          ) : (
+            <div className="mt-1 text-[12px] text-[var(--muted)]">Default orchestrator prompt.</div>
+          )}
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          {entries.map(([name, r]) => (
+            <div key={name} className="rounded-md border border-[var(--border)] bg-[var(--panel-2)] p-3" data-role={name}>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[13px] font-semibold">{name}</span>
+                <Chip status={r.trainable === false ? "frozen" : "ok"}>{r.trainable === false ? "frozen" : "trainable"}</Chip>
+                {r.model && <span className="mono text-[11px] text-[var(--muted)]">{r.model}</span>}
+              </div>
+              {r.description && <div className="mt-1 text-[12px] text-[var(--muted)]">{r.description}</div>}
+              <div className="mt-2 flex flex-wrap gap-1">
+                {(r.tool_names || []).map((t) => (
+                  <span key={t} className="mono rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 text-[11px]">{t}</span>
+                ))}
+                {(r.tool_names || []).length === 0 && <span className="text-[11px] text-[var(--muted)]">no explicit tools{r.tool_tags?.length ? ` · tags ${r.tool_tags.join(", ")}` : ""}</span>}
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-[var(--muted)] md:grid-cols-4">
+                <div>router top-k <span className="tabular-nums text-[var(--fg)]">{r.router_top_k ?? "–"}</span></div>
+                <div>max steps <span className="tabular-nums text-[var(--fg)]">{r.max_steps ?? "–"}</span></div>
+                <div>tool router <Chip status={r.tool_router ? "ok" : "unset"}>{r.tool_router ? "artifact" : "none"}</Chip></div>
+                <div>exemplars <Chip status={r.exemplar_store ? "ok" : "unset"}>{r.exemplar_store ? `k=${r.exemplar_k ?? "?"}` : "none"}</Chip></div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Panel>
+  );
+}
 
 function AgentDetail() {
   const id = useSearchParams().get("id") || "";
@@ -41,7 +87,8 @@ function AgentDetail() {
               title={`${a.name} / ${a.version}`}
               subtitle={
                 <span className="flex flex-wrap items-center gap-2">
-                  <Chip status={a.status} /> origin <span className="mono">{a.origin}</span> · <span className="mono">{a.id}</span> · created {ts(a.created_at)}
+                  <Chip status={a.status} />
+                  {a.config?.roles && Object.keys(a.config.roles).length > 0 && <Chip status="agent">multi-agent · {Object.keys(a.config.roles).length} roles</Chip>} origin <span className="mono">{a.origin}</span> · <span className="mono">{a.id}</span> · created {ts(a.created_at)}
                 </span>
               }
               actions={
@@ -69,6 +116,9 @@ function AgentDetail() {
                     <div className="text-[var(--muted)]">Empty system prompt.</div>
                   )}
                 </Panel>
+                {a.config?.roles && Object.keys(a.config.roles).length > 0 && (
+                  <RolesPanel roles={a.config.roles} orchestratorPrompt={a.config.orchestrator_prompt} orchestratorTools={a.config.orchestrator_tools} />
+                )}
                 <Panel title="Config">
                   <JsonView value={rest} />
                 </Panel>

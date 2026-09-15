@@ -31,10 +31,16 @@ def create_app() -> FastAPI:
             db.close()
 
     @app.middleware("http")
-    async def _timing(request: Request, call_next):
+    async def _timing_audit_metering(request: Request, call_next):
         t0 = time.perf_counter()
         resp = await call_next(request)
         resp.headers["x-process-time-ms"] = f"{(time.perf_counter() - t0) * 1000:.1f}"
+        principal = getattr(request.state, "principal", None)
+        path = request.url.path
+        if principal is not None and path.startswith("/v1"):
+            from .audit import record_request
+
+            record_request(principal, request, resp.status_code, t0)
         return resp
 
     @app.exception_handler(Exception)
@@ -49,6 +55,16 @@ def create_app() -> FastAPI:
     app.include_router(core.router, prefix="/v1", tags=["core"])
     app.include_router(observability.router, prefix="/v1", tags=["observability"])
     app.include_router(runs.router, prefix="/v1", tags=["runs"])
+    from fastapi import Depends
+
+    from ..distributed.env_server import router as env_router
+    from .deps import require_api_key
+
+    app.include_router(env_router, prefix="/v1", dependencies=[Depends(require_api_key)])
+    from .routers import admin
+
+    app.include_router(admin.router, prefix="/v1")
+    app.include_router(admin.auth_router, prefix="/v1")
     return app
 
 

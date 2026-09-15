@@ -21,6 +21,15 @@ const chipColors: Record<string, string> = {
   agent: "bg-violet-500/15 text-violet-300 border-violet-500/30",
   llm: "bg-sky-500/15 text-sky-300 border-sky-500/30",
   tool: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  root: "bg-violet-500/15 text-violet-300 border-violet-500/30",
+  user: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+  api_key: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  frozen: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
+  updated: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  "2xx": "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  "3xx": "bg-sky-500/15 text-sky-300 border-sky-500/30",
+  "4xx": "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  "5xx": "bg-rose-500/15 text-rose-300 border-rose-500/30",
 };
 
 export function Chip({ status, children }: { status: string | boolean | null | undefined; children?: ReactNode }) {
@@ -73,7 +82,24 @@ export function Empty({ children = "Nothing here yet." }: { children?: ReactNode
   return <div className="py-10 text-center text-[var(--muted)]">{children}</div>;
 }
 
+/** Amber banner for quota (402) and rate-limit (429) responses; the `detail` text is shown verbatim. */
+export function LimitBanner({ status, detail }: { status: 402 | 429; detail: string }) {
+  return (
+    <div role="alert" className="flex items-start gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[13px] text-amber-100">
+      <Chip status="pending">{status === 402 ? "quota exceeded" : "rate limited"}</Chip>
+      <div>
+        <div>{detail}</div>
+        <div className="mt-0.5 text-[12px] text-amber-200/70">
+          {status === 402 ? "Upgrade the organization plan or wait for the quota window to reset." : "Slow down and retry in a moment."}{" "}
+          <Link href="/org" className="underline">Organization →</Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ErrorBox({ error }: { error: unknown }) {
+  if (error instanceof ApiError && (error.status === 402 || error.status === 429)) return <LimitBanner status={error.status} detail={error.message} />;
   const msg = error instanceof ApiError ? `${error.status}: ${error.message}` : error instanceof Error ? error.message : String(error);
   return (
     <div className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[13px] text-rose-200">

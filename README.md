@@ -77,7 +77,10 @@ docker compose exec api saphire demo --host http://api:8000
 | **Evaluation** | `saphire.evaluation` | Runner with concurrency, `k` trials, pass@k / pass^k / consistency, latency percentiles, throughput, tokens; suites (`tool_selection`, `context_preservation`, `long_horizon`, `cross_env`, `full`); bootstrap CIs, permutation tests, `GatePolicy` deployment gates. |
 | **Server** | `saphire.server` | FastAPI + SQLAlchemy (SQLite dev / Postgres prod), DB-backed job queue with `saphire worker`, REST API for projects, agents (versions, promote), datasets, traces/spans ingest, rollouts, scores, evals, training runs, deployments, A/B experiments, metrics time series. |
 | **Dashboard** | `frontend/` | Next.js 14 + Tailwind + Recharts: overview with improvement-over-time charts, agents, trace waterfall, rollouts/conversations, evals (+compare), training runs (+iteration charts), deployments/gates, experiments, jobs. |
-| **Ops** | `Dockerfile`, `docker-compose.yml`, `deploy/k8s`, `.github/workflows/ci.yml` | Containers, compose stack, Kubernetes manifests, CI (lint, tests, e2e demo, TRL smoke, frontend build, docker build). |
+| **Multi-agent** | `saphire.sdk.multi_agent`, `saphire.training.multi_agent` | Orchestrator + specialist roles with hand-off tools, per-role steps/credit assignment, **selective optimisation** (`optimize_roles`) that trains chosen roles and freezes the rest. |
+| **Distributed** | `saphire.distributed` | Ray / process / thread rollout engine for collection and evaluation, environment & reward server for remote trainers, verl dataset export + reward function, OpenRLHF agent loop. |
+| **Enterprise** | `saphire.server.auth`, `routers/admin.py` | Organizations, hashed org API keys, OIDC SSO + JWT sessions, RBAC (viewer/member/admin/owner), audit log, usage metering, plans/quotas, rate limits, retention. |
+| **Ops** | `Dockerfile`, `docker-compose.yml`, `deploy/helm`, `deploy/k8s`, `.github/workflows/ci.yml` | Containers, compose stack, Helm chart (HPA, KEDA worker autoscaling, retention CronJob, env server), S3 artifact store, benchmark harness (`saphire bench`), CI. |
 
 ---
 
@@ -140,8 +143,26 @@ print(res.metrics["pass_hat_3"], res.metrics["tool_selection_f1"])
 * OpenInference/OTel instrumentors (OpenAI, Anthropic, LangChain, …) can be attached to the same tracer provider.
 * MCP servers: `registry_from_mcp("npx", ["-y", "@modelcontextprotocol/server-filesystem", "/data"])`.
 
+### Multi-agent systems
+
+```python
+from saphire.environments.support_desk import multi_agent_config   # orchestrator + orders/customers/tickets/billing
+from saphire.sdk.multi_agent import build_agent
+system = build_agent(multi_agent_config(model="openai/gpt-4o-mini"))
+res = evaluate(system, tasks)            # res.by_role -> credit per role
+# selective optimisation: train only the roles that under-perform, freeze the others
+client.train(agent_id, "online", train_dataset_id=..., eval_dataset_id=..., optimize_roles=["orders", "tickets"])
+```
+
+### Scale
+
+`saphire eval --distributed ray --workers 64`, `SAPHIRE_ARTIFACT_STORE=s3://…`, `saphire env-server` for verl/OpenRLHF,
+Helm chart with HPA + KEDA worker autoscaling, `saphire bench` for measured numbers → [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
 More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/TRAINING.md](docs/TRAINING.md) · [docs/EVALUATION.md](docs/EVALUATION.md) ·
-[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) · [docs/API.md](docs/API.md) · [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [docs/METIS_COMPARISON.md](docs/METIS_COMPARISON.md)
+[docs/DISTRIBUTED.md](docs/DISTRIBUTED.md) · [docs/ENTERPRISE.md](docs/ENTERPRISE.md) · [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) ·
+[docs/API.md](docs/API.md) · [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [docs/PILOT_PLAYBOOK.md](docs/PILOT_PLAYBOOK.md) ·
+[docs/METIS_COMPARISON.md](docs/METIS_COMPARISON.md)
 
 ---
 
@@ -154,20 +175,23 @@ saphire demo [--iterations N] [--model ...]   end-to-end demo against a running 
 saphire eval --suite full --model mock:error=0.3 --k 3 --judge mock     local evaluation, no server
 saphire train online|prompt_opt|sft|dpo|grpo  local training loops
 saphire envs                                  list environments
+saphire env-server --port 8010                environment / reward server for external RL trainers
+saphire bench --host http://localhost:8000    load & scale benchmarks (docs/BENCHMARKS.md)
+saphire create-org acme --owner-email ...     bootstrap a tenant + admin key
+saphire retention [--days N] [--dry-run]      purge data outside the retention window
 ```
 
 ## Tests
 
 ```bash
-pytest -q -m "not slow"     # 32 tests: SDK, environments, signals, training loop, API/jobs, connectors (~15 s)
+pytest -q -m "not slow"     # 60+ tests: SDK, environments, signals, training, multi-agent, distributed, API/jobs, tenancy/RBAC/audit, scale (~45 s)
 pytest -q -m slow           # TRL SFT/DPO/GRPO smoke on a tiny model (CPU, ~1 min, needs saphire[train])
 ```
 
 ## Status, gaps and external dependencies
 
-Saphire is a working end-to-end foundation, not a finished product. Known gaps are tracked in
-[docs/METIS_COMPARISON.md](docs/METIS_COMPARISON.md#capability-gaps); the big ones: weight-update RL is single-node TRL
-(multi-node PPO/GRPO with vLLM rollouts is documented as an integration with verl / OpenRLHF / agent-lightning, not
-bundled); the built-in environments are simulations of first-party data, not connectors to live SaaS; auth is a
-single API key (no SSO/RBAC); the dashboard is read-mostly. Everything in the repo is Apache-2.0 and depends only on
+Saphire is a working, tested platform with no production tenant yet. Known gaps are tracked in
+[docs/METIS_COMPARISON.md](docs/METIS_COMPARISON.md#capability-gaps): multi-node verl/OpenRLHF runs are integrated but not
+executed in CI (GPUs); SCIM/billing/SOC 2 evidence are not included; and — most importantly — there is **no customer evidence**:
+[docs/PILOT_PLAYBOOK.md](docs/PILOT_PLAYBOOK.md) is the procedure for earning it from the platform's own records. Everything in the repo is Apache-2.0 and depends only on
 permissively licensed OSS (FastAPI, SQLAlchemy, OpenTelemetry, LiteLLM, TRL/PEFT/transformers, MCP SDK, Next.js, Recharts).

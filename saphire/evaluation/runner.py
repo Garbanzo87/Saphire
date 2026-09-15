@@ -59,6 +59,7 @@ class EvalResult(BaseModel):
     by_family: dict[str, dict[str, float]] = Field(default_factory=dict)
     by_env: dict[str, dict[str, float]] = Field(default_factory=dict)
     by_difficulty: dict[str, dict[str, float]] = Field(default_factory=dict)
+    by_role: dict[str, dict[str, float]] = Field(default_factory=dict)  # multi-agent systems: credit per role
     per_rollout: list[RolloutRecord] = Field(default_factory=list)
 
     def summary(self) -> dict[str, Any]:
@@ -113,6 +114,7 @@ def evaluate(agent: ToolAgent, tasks: list[TaskSpec], envs: dict[str, Environmen
 
     jobs = [(t, trial) for t in tasks for trial in range(k)]
     records: list[RolloutRecord] = []
+    role_stats: dict[str, list[dict[str, float]]] = {}
     t0 = time.perf_counter()
 
     def _one(job):
@@ -124,6 +126,11 @@ def evaluate(agent: ToolAgent, tasks: list[TaskSpec], envs: dict[str, Environmen
         if judge is not None:
             rewards.extend(judge(task, ro))
         ro.rewards = rewards
+        if ro.metadata.get("multi_agent"):
+            from ..sdk.multi_agent import role_rewards
+
+            for role, rr in role_rewards(ro).items():
+                role_stats.setdefault(role, []).append(rr)
         if on_rollout is not None:
             on_rollout(ro, task, rewards)
         return record_from(ro, task, rewards, trial)
@@ -134,7 +141,12 @@ def evaluate(agent: ToolAgent, tasks: list[TaskSpec], envs: dict[str, Environmen
     else:
         records = [_one(j) for j in jobs]
     wall = time.perf_counter() - t0
+    return build_result(agent.config.name, agent.config.version, suite, len(tasks), records, k, wall, role_stats)
 
+
+def build_result(agent_name: str, agent_version: str, suite: str, n_tasks: int, records: list[RolloutRecord], k: int, wall: float,
+                 role_stats: dict[str, list[dict[str, float]]] | None = None) -> EvalResult:
+    """Aggregate per-rollout records into an EvalResult (shared by local and distributed evaluation)."""
     agg = _aggregate(records)
     per_task: dict[str, list[float]] = defaultdict(list)
     for r in records:
@@ -154,9 +166,12 @@ def evaluate(agent: ToolAgent, tasks: list[TaskSpec], envs: dict[str, Environmen
             g[keyfn(r)].append(r)
         return {kk: _aggregate(v) for kk, v in sorted(g.items())}
 
-    return EvalResult(agent=agent.config.name, agent_version=agent.config.version, suite=suite, n_tasks=len(tasks),
+    by_role = {role: {"step_reward": M.mean(x["step_mean"] for x in xs), "steps_per_rollout": M.mean(x["n_steps"] for x in xs),
+                      "tool_calls_per_rollout": M.mean(x["n_tool_calls"] for x in xs), "n": float(len(xs))}
+               for role, xs in sorted((role_stats or {}).items())}
+    return EvalResult(agent=agent_name, agent_version=agent_version, suite=suite, n_tasks=n_tasks,
                       n_rollouts=len(records), k=k, wall_time_s=wall, metrics=agg, by_family=group(lambda r: r.family),
-                      by_env=group(lambda r: r.env_name), by_difficulty=group(lambda r: r.difficulty), per_rollout=records)
+                      by_env=group(lambda r: r.env_name), by_difficulty=group(lambda r: r.difficulty), by_role=by_role, per_rollout=records)
 
 
 def evaluate_config(config: AgentConfig, tasks: list[TaskSpec], **kw: Any) -> EvalResult:

@@ -21,8 +21,9 @@ import re
 from typing import Any
 
 from ..sdk.tools import ToolRegistry
-from ..sdk.types import Reward, Rollout, TaskSpec
+from ..sdk.types import AgentConfig, Reward, Rollout, TaskSpec
 from .base import Environment, EnvState, register_environment
+from .verify_utils import effective_calls, ordered_ok, step_tool_rewards, tool_selection_scores
 
 FIRST = ["Aisha", "Bilal", "Chen", "Dana", "Elias", "Fatima", "Gabriel", "Hana", "Ibrahim", "Julia", "Khalid", "Lena",
          "Mateo", "Noor", "Omar", "Priya", "Quinn", "Rania", "Sami", "Tara"]
@@ -415,21 +416,14 @@ class SupportDeskEnv(Environment):
         exp = task.expected
         d = state.data
         checks: dict[str, bool] = {}
-        called = [tc.name for tc in rollout.tool_calls]
+        called = effective_calls(rollout)
         # tool selection: set-level F1 + order check
         exp_tools = exp.get("tools", [])
         if exp_tools:
-            es, cs = set(exp_tools), set(called)
-            tp = len(es & cs)
-            prec = tp / len(cs) if cs else 0.0
-            rec = tp / len(es)
-            f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
-            checks["all_expected_tools_called"] = es <= cs
+            f1, covered = tool_selection_scores(exp_tools, called)
+            checks["all_expected_tools_called"] = covered
             if exp.get("ordered"):
-                seq = [n for n in called if n in es]
-                # expected order as subsequence
-                it = iter(seq)
-                checks["tool_order"] = all(any(x == e for x in it) for e in exp_tools)
+                checks["tool_order"] = ordered_ok(exp_tools, called)
         else:
             f1 = 1.0
         # state-based checks
@@ -484,9 +478,36 @@ class SupportDeskEnv(Environment):
                     ok &= bool(later) and all(tc.arguments.get(k) == v for tc in later)
             rewards.append(Reward(value=1.0 if ok else 0.0, source="verifier", name="context_preservation"))
         rewards.append(Reward(value=1.0 if n_err == 0 else max(0.0, 1 - 0.5 * n_err), source="verifier", name="tool_error_free"))
-        # per-step tool-correctness signal (for routers / step-level RL)
-        for s in rollout.steps:
-            for tc in s.response.tool_calls:
-                rewards.append(Reward(value=1.0 if tc.name in exp_tools else -1.0, source="verifier", name="tool_correct",
-                                      step_index=s.index, metadata={"tool": tc.name}))
+        # per-step tool-correctness signal (for routers / step-level RL), hand-off aware
+        rewards.extend(step_tool_rewards(rollout, exp_tools))
         return rewards
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent preset: orchestrator + 4 specialists over the same tool catalogue
+# ---------------------------------------------------------------------------
+def multi_agent_config(model: str = "mock", name: str = "support-system", version: str = "v0", router_top_k: int = 0) -> AgentConfig:
+    """Orchestrator that delegates to `orders`, `customers`, `tickets` and `billing` specialists.
+
+    Each specialist owns a subset of the 30 tools (core + look-alike distractors) so tool selection
+    failures are attributable to a role, and each role can be optimised independently."""
+    from ..sdk.types import RoleConfig
+
+    roles = {
+        "orders": RoleConfig(description="orders and shipping: look up orders, cancel orders, change shipping addresses, track shipments, discount codes",
+                             tool_names=["lookup_order", "cancel_order", "update_shipping_address", "track_shipment", "apply_discount_code",
+                                         "lookup_invoice", "track_return", "search_orders_archive", "list_warehouse_stock"], router_top_k=router_top_k),
+        "customers": RoleConfig(description="customer records and communication: look up customers, find customers by email, list a customer's orders, send emails",
+                                tool_names=["lookup_customer", "find_customer_by_email", "list_customer_orders", "send_email",
+                                            "update_billing_address", "close_account", "cancel_subscription", "schedule_callback", "send_sms"],
+                                router_top_k=router_top_k),
+        "tickets": RoleConfig(description="support tickets and knowledge base: create tickets, update ticket status, escalate tickets, search the knowledge base",
+                              tool_names=["create_ticket", "update_ticket_status", "escalate_ticket", "search_knowledge_base",
+                                          "reopen_ticket", "escalate_to_legal", "create_task"], router_top_k=router_top_k),
+        "billing": RoleConfig(description="payments and refunds: issue refunds on orders",
+                              tool_names=["issue_refund", "issue_store_credit", "refund_invoice", "lookup_vendor", "generate_report"],
+                              router_top_k=router_top_k),
+    }
+    return AgentConfig(name=name, version=version, model=model, roles=roles, max_steps=12,
+                       orchestrator_prompt=("You are a support orchestrator. Break the request into steps and delegate each step to the right "
+                                            "specialist with the full task text and all identifiers as context. Reply with a final summary when done."))

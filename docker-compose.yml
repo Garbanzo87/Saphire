@@ -25,6 +25,13 @@ services:
       SAPHIRE_CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SAPHIRE_JWT_SECRET: ${SAPHIRE_JWT_SECRET:-change-me}
+      SAPHIRE_DEV_LOGIN: ${SAPHIRE_DEV_LOGIN:-1}
+      SAPHIRE_OIDC_ISSUER: ${SAPHIRE_OIDC_ISSUER:-}
+      SAPHIRE_OIDC_CLIENT_ID: ${SAPHIRE_OIDC_CLIENT_ID:-}
+      SAPHIRE_OIDC_CLIENT_SECRET: ${SAPHIRE_OIDC_CLIENT_SECRET:-}
+      SAPHIRE_ARTIFACT_STORE: ${SAPHIRE_ARTIFACT_STORE:-}
+      SAPHIRE_RETENTION_DAYS: ${SAPHIRE_RETENTION_DAYS:-0}
     ports: ["8000:8000"]
     volumes: ["artifacts:/artifacts"]
     depends_on: { db: { condition: service_healthy } }
@@ -36,6 +43,13 @@ services:
     volumes: ["artifacts:/artifacts"]
     depends_on: { db: { condition: service_healthy } }
     deploy: { replicas: 1 }
+
+  env-server:          # optional: reward/environment server for external RL trainers (verl / OpenRLHF)
+    build: { context: ., args: { EXTRAS: "providers,mcp,postgres" } }
+    command: ["saphire", "env-server", "--port", "8010"]
+    environment: *env
+    ports: ["8010:8010"]
+    profiles: ["rl"]
 
   frontend:
     build:

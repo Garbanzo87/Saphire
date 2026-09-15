@@ -12,45 +12,52 @@ from . import db as D
 
 
 def ingest_spans(db: Session, project: D.Project, spans: list[dict[str, Any]]) -> dict[str, int]:
-    """Upsert spans and roll them up into traces."""
+    """Bulk upsert spans and roll them up into traces (set-based: 3 queries + 2 bulk writes per batch)."""
+    if not spans:
+        return {"traces": 0, "spans": 0}
     by_trace: dict[str, list[dict]] = {}
     for s in spans:
         by_trace.setdefault(s["trace_id"], []).append(s)
-    n_spans = 0
+    trace_ids = list(by_trace)
+    span_ids = [s["span_id"] for s in spans]
+    existing_traces = {t.id: t for t in db.query(D.Trace).filter(D.Trace.id.in_(trace_ids)).all()}
+    existing_spans = {r[0] for r in db.query(D.Span.id).filter(D.Span.id.in_(span_ids)).all()}
+    new_span_rows: list[dict[str, Any]] = []
+    upd_span_rows: list[dict[str, Any]] = []
     for tid, ss in by_trace.items():
-        tr = db.get(D.Trace, tid)
+        tr = existing_traces.get(tid)
         if tr is None:
-            tr = D.Trace(id=tid, project_id=project.id)
+            tr = D.Trace(id=tid, project_id=project.id, n_spans=0, attributes={}, status="unset", name="", service="")
             db.add(tr)
-            db.flush()
+            existing_traces[tid] = tr
         for s in ss:
-            sp = db.get(D.Span, s["span_id"])
-            if sp is None:
-                sp = D.Span(id=s["span_id"], trace_id=tid)
-                db.add(sp)
+            row = {"id": s["span_id"], "trace_id": tid, "parent_span_id": s.get("parent_span_id"), "name": s.get("name", ""),
+                   "kind": s.get("kind", "span"), "start_time": s.get("start_time"), "end_time": s.get("end_time"),
+                   "status": s.get("status", "unset"), "attributes": s.get("attributes", {}) or {}, "events": s.get("events", []) or []}
+            if s["span_id"] in existing_spans:
+                upd_span_rows.append(row)
+            else:
+                new_span_rows.append(row)
+                existing_spans.add(s["span_id"])
                 tr.n_spans += 1
-            sp.parent_span_id = s.get("parent_span_id")
-            sp.name = s.get("name", "")
-            sp.kind = s.get("kind", "span")
-            sp.start_time = s.get("start_time")
-            sp.end_time = s.get("end_time")
-            sp.status = s.get("status", "unset")
-            sp.attributes = s.get("attributes", {}) or {}
-            sp.events = s.get("events", []) or []
-            n_spans += 1
             if not s.get("parent_span_id"):
-                tr.name = sp.name
-                tr.attributes = sp.attributes
-                tr.status = sp.status
-                if sp.attributes.get("rollout.id"):
-                    tr.rollout_id = sp.attributes["rollout.id"]
+                tr.name = row["name"]
+                tr.attributes = row["attributes"]
+                tr.status = row["status"]
+                if row["attributes"].get("rollout.id"):
+                    tr.rollout_id = row["attributes"]["rollout.id"]
             tr.service = s.get("service") or tr.service
-            tr.start_time = min([t for t in [tr.start_time, sp.start_time] if t is not None], default=None)
-            tr.end_time = max([t for t in [tr.end_time, sp.end_time] if t is not None], default=None)
-            if sp.status == "error":
+            tr.start_time = min([t for t in [tr.start_time, row["start_time"]] if t is not None], default=None)
+            tr.end_time = max([t for t in [tr.end_time, row["end_time"]] if t is not None], default=None)
+            if row["status"] == "error":
                 tr.status = "error"
+    db.flush()  # traces exist before spans reference them
+    if new_span_rows:
+        db.bulk_insert_mappings(D.Span, new_span_rows)
+    if upd_span_rows:
+        db.bulk_update_mappings(D.Span, upd_span_rows)
     db.commit()
-    return {"traces": len(by_trace), "spans": n_spans}
+    return {"traces": len(by_trace), "spans": len(spans)}
 
 
 def persist_rollout(db: Session, project: D.Project, rollout: Rollout, task: TaskSpec, rewards: list[Reward],
@@ -70,6 +77,10 @@ def persist_rollout(db: Session, project: D.Project, rollout: Rollout, task: Tas
         if tr is not None:
             tr.rollout_id = rollout.id
     db.commit()
+    from .auth import meter
+
+    meter(db, project.org_id, "rollouts", 1)
+    meter(db, project.org_id, "tokens", float(rollout.usage.total_tokens))
     return row
 
 

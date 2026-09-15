@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: saphire-worker, labels: { app: saphire-worker } }
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector: { matchLabels: { app: saphire-worker } }
+  template:
+    metadata: { labels: { app: saphire-worker } }
+    spec:
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["saphire", "worker"]
+          {{- include "saphire.envFrom" . | nindent 10 }}
+          resources:
+            requests: {{ toYaml .Values.worker.resources.requests | nindent 14 }}
+            limits:
+              {{- toYaml .Values.worker.resources.limits | nindent 14 }}
+              {{- if gt (int .Values.worker.gpu) 0 }}
+              nvidia.com/gpu: {{ .Values.worker.gpu }}
+              {{- end }}
+          {{- include "saphire.volumes" . | nindent 10 }}
+      {{- include "saphire.podVolumes" . | nindent 6 }}
+{{- if .Values.worker.keda.enabled }}
+---
+# Scale workers on the number of pending jobs in Postgres (KEDA postgresql scaler).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata: { name: saphire-worker }
+spec:
+  scaleTargetRef: { name: saphire-worker }
+  minReplicaCount: {{ .Values.worker.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.worker.keda.maxReplicas }}
+  triggers:
+    - type: postgresql
+      metadata:
+        connectionFromEnv: SAPHIRE_DATABASE_URL_PG      # plain postgresql:// DSN in the secret
+        query: "SELECT COUNT(*) FROM jobs WHERE status = 'pending'"
+        targetQueryValue: "{{ .Values.worker.keda.pendingJobsPerReplica }}"
+{{- end }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: saphire-retention }
+spec:
+  schedule: {{ .Values.retention.cron | quote }}
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: retention
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              command: ["saphire", "retention"]
+              {{- include "saphire.envFrom" . | nindent 14 }}

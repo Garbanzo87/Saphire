@@ -30,12 +30,17 @@ function NewTrainingForm({ onCreated }: { onCreated: (t: TrainingRun) => void })
   const { data: datasets } = useSWR<Dataset[]>("/v1/datasets", fetcher);
   const [algo, setAlgo] = useState<Algo>("online");
   const [agentId, setAgentId] = useState("");
-  const [p, setP] = useState<Record<string, string | number>>({ iterations: 3, batch_size: 24, learn_prompt_every: 2, model: "mock", max_steps: 100, lora_r: 8 });
+  const [p, setP] = useState<Record<string, string | number>>({ iterations: 3, batch_size: 24, learn_prompt_every: 2, model: "mock", max_steps: 100, lora_r: 8, rollout_backend: "", rollout_workers: 4 });
+  const [optimizeRoles, setOptimizeRoles] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<unknown>(null);
   const train = datasets?.filter((d) => d.split === "train") || [];
   const evals = datasets?.filter((d) => d.split !== "train") || [];
   const aid = agentId || agents?.find((a) => a.status === "deployed")?.id || agents?.[0]?.id || "";
+  const selectedAgent = agents?.find((a) => a.id === aid);
+  const roleNames = Object.keys(selectedAgent?.config?.roles || {});
+  const multiAgent = roleNames.length > 0;
+  const rolesSupported = algo === "online" || algo === "router" || algo === "exemplars";
   const trainId = String(p.train_dataset_id || train[0]?.id || datasets?.[0]?.id || "");
   const evalId = String(p.eval_dataset_id || evals[0]?.id || datasets?.[0]?.id || "");
   const set = (k: string, v: string | number) => setP({ ...p, [k]: v });
@@ -57,7 +62,11 @@ function NewTrainingForm({ onCreated }: { onCreated: (t: TrainingRun) => void })
     setBusy(true);
     setErr(null);
     let params: Record<string, unknown> = {};
-    if (algo === "online") params = { train_dataset_id: trainId, eval_dataset_id: evalId, iterations: p.iterations, batch_size: p.batch_size, learn_prompt_every: p.learn_prompt_every };
+    if (algo === "online") {
+      params = { train_dataset_id: trainId, eval_dataset_id: evalId, iterations: p.iterations, batch_size: p.batch_size, learn_prompt_every: p.learn_prompt_every };
+      if (p.rollout_backend) params = { ...params, rollout_backend: p.rollout_backend, rollout_workers: Number(p.rollout_workers) || undefined };
+    }
+    if (multiAgent && rolesSupported && optimizeRoles.length > 0) params = { ...params, optimize_roles: optimizeRoles.filter((r) => roleNames.includes(r)) };
     else if (algo === "prompt_opt") params = { train_dataset_id: trainId, iterations: p.iterations };
     else if (algo === "sft" || algo === "dpo" || algo === "grpo") params = { model: p.model, max_steps: p.max_steps, lora_r: p.lora_r };
     try {
@@ -72,8 +81,8 @@ function NewTrainingForm({ onCreated }: { onCreated: (t: TrainingRun) => void })
     <form onSubmit={submit} className="space-y-3">
       <div className="grid gap-3 md:grid-cols-4">
         <Field label="Agent (input version)">
-          <select className="input" value={aid} onChange={(e) => setAgentId(e.target.value)}>
-            {(agents || []).map((a) => <option key={a.id} value={a.id}>{a.name}/{a.version} ({a.status})</option>)}
+          <select className="input" value={aid} onChange={(e) => { setAgentId(e.target.value); setOptimizeRoles([]); }}>
+            {(agents || []).map((a) => <option key={a.id} value={a.id}>{a.name}/{a.version} ({a.status}){a.config?.roles && Object.keys(a.config.roles).length ? ` · ${Object.keys(a.config.roles).length} roles` : ""}</option>)}
           </select>
         </Field>
         <Field label="Algorithm">
@@ -91,6 +100,15 @@ function NewTrainingForm({ onCreated }: { onCreated: (t: TrainingRun) => void })
             {numIn("iterations", "Iterations")}
             {numIn("batch_size", "Batch size")}
             {numIn("learn_prompt_every", "Learn prompt every")}
+            <Field label="Rollout backend">
+              <select className="input" value={String(p.rollout_backend ?? "")} onChange={(e) => set("rollout_backend", e.target.value)}>
+                <option value="">none (in-process)</option>
+                <option value="thread">thread</option>
+                <option value="process">process</option>
+                <option value="ray">ray</option>
+              </select>
+            </Field>
+            {p.rollout_backend ? numIn("rollout_workers", "Rollout workers") : null}
           </>
         )}
         {algo === "prompt_opt" && (
@@ -109,6 +127,27 @@ function NewTrainingForm({ onCreated }: { onCreated: (t: TrainingRun) => void })
           </>
         )}
         {(algo === "router" || algo === "exemplars" || algo === "signals") && <div className="self-end text-[12px] text-[var(--muted)] md:col-span-3">No parameters — uses rollouts and traces already stored for this agent.</div>}
+        {multiAgent && rolesSupported && (
+          <Field label="Optimise roles (empty = all trainable)">
+            <div className="flex flex-wrap gap-1.5 py-1" role="group" aria-label="Optimise roles">
+              {roleNames.map((r) => {
+                const on = optimizeRoles.includes(r);
+                const trainable = selectedAgent?.config?.roles?.[r]?.trainable !== false;
+                return (
+                  <button
+                    key={r}
+                    type="button"
+                    title={trainable ? "" : "role is marked non-trainable"}
+                    onClick={() => setOptimizeRoles(on ? optimizeRoles.filter((x) => x !== r) : [...optimizeRoles, r])}
+                    className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${on ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300" : "border-[var(--border)] bg-[var(--bg)] text-[var(--muted)] hover:text-white"} ${trainable ? "" : "line-through"}`}
+                  >
+                    {r}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+        )}
         <div className="flex items-end">
           <button className="btn btn-primary w-full" disabled={busy || !aid}>{busy ? "Starting…" : "Start training"}</button>
         </div>

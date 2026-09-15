@@ -12,6 +12,7 @@ from ...evaluation.suites import build_suite, list_suites
 from ...sdk.types import AgentConfig, TaskSpec
 from .. import db as D
 from .. import service as S
+from ..auth import Principal, audit, get_principal, require
 from ..deps import get_or_404, get_project, require_api_key
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -24,16 +25,19 @@ class ProjectIn(BaseModel):
 
 
 @router.get("/projects")
-def list_projects(db: Session = Depends(D.get_db)):
-    return [D.to_dict(p) for p in db.query(D.Project).order_by(D.Project.created_at).all()]
+def list_projects(p: Principal = Depends(get_principal), db: Session = Depends(D.get_db)):
+    q = db.query(D.Project)
+    if not p.is_superadmin or p.org is not None:
+        q = q.filter_by(org_id=(p.org or D.ensure_org(db)).id)
+    return [D.to_dict(x) for x in q.order_by(D.Project.created_at).all()]
 
 
 @router.post("/projects", status_code=201)
-def create_project(body: ProjectIn, db: Session = Depends(D.get_db)):
-    p = D.ensure_project(db, body.name)
-    p.description = body.description
+def create_project(body: ProjectIn, p: Principal = Depends(get_principal), db: Session = Depends(D.get_db)):
+    proj = D.ensure_project(db, body.name, org_id=(p.org or D.ensure_org(db)).id)
+    proj.description = body.description
     db.commit()
-    return D.to_dict(p)
+    return D.to_dict(proj)
 
 
 # ---------------- environments ----------------
@@ -85,11 +89,12 @@ def get_agent(agent_id: str, db: Session = Depends(D.get_db)):
 
 
 @router.post("/agents/{agent_id}/promote")
-def promote_agent(agent_id: str, db: Session = Depends(D.get_db)):
+def promote_agent(agent_id: str, p: Principal = Depends(require("deploy")), db: Session = Depends(D.get_db)):
     from ..jobs import promote
 
     a = get_or_404(db, D.Agent, agent_id)
     promote(db, a.project_id, a)
+    audit(db, p, "agents.promote", "agent", a.id, details={"name": a.name, "version": a.version})
     return D.to_dict(a)
 
 

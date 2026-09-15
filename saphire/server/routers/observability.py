@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ...sdk.types import Reward, Rollout, TaskSpec
 from .. import db as D
 from .. import service as S
+from ..auth import Principal, check_quota, get_principal, meter
 from ..deps import get_or_404, get_project, require_api_key
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -23,11 +24,13 @@ class IngestIn(BaseModel):
 
 
 @router.post("/traces/ingest")
-def ingest(body: IngestIn, db: Session = Depends(D.get_db)):
+def ingest(body: IngestIn, p: Principal = Depends(get_principal), db: Session = Depends(D.get_db)):
     from ..config import settings
 
-    project = D.ensure_project(db, body.project or settings.default_project)
-    return S.ingest_spans(db, project, body.spans)
+    project = D.ensure_project(db, body.project or settings.default_project, org_id=(p.org or D.ensure_org(db)).id)
+    out = S.ingest_spans(db, project, body.spans)
+    meter(db, project.org_id, "spans", out["spans"])
+    return out
 
 
 @router.get("/traces")
@@ -66,6 +69,7 @@ class RolloutIn(BaseModel):
 @router.post("/rollouts", status_code=201)
 def create_rollout(body: RolloutIn, project: D.Project = Depends(get_project), db: Session = Depends(D.get_db)):
     """Bring-your-own-agent ingestion: store a rollout produced by the SDK's RolloutRecorder."""
+    check_quota(db, db.get(D.Organization, project.org_id), "rollouts_per_month")
     rewards = list(body.rewards)
     row = S.persist_rollout(db, project, body.rollout, body.task, rewards, agent_id=body.agent_id)
     return {"id": row.id, "task_success": row.task_success, "n_rewards": len(rewards)}

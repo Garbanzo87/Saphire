@@ -40,7 +40,7 @@ PyPI [`mantisdk`](https://pypi.org/project/mantisdk/) (0.2.4, MIT), GitHub [meti
 | In-context exemplar learning | ❌ | ✅ `ExemplarStore` | |
 | Online learning loop with versioned agents | ⚠️ claimed | ✅ `OnlineLoop` + `training` job → agent versions + metric points | |
 | SFT / DPO on trajectories | ✅ (agent-lightning SFT) | ✅ TRL, LoRA, CPU smoke path in CI | |
-| RL with environment reward (GRPO/PPO) | ✅ thin `verl` wrapper, GPU only | ✅ TRL GRPO with replay-grounded reward (single node); ⚠️ multi-node verl/OpenRLHF documented, not bundled | see gaps |
+| RL with environment reward (GRPO/PPO) | ✅ thin `verl` wrapper, GPU only | ✅ TRL GRPO with replay-grounded reward (single node) + verl/OpenRLHF integrations (see Distributed RL row) | |
 | Evaluation on tool selection / context / long workflows | ⚠️ claimed | ✅ dedicated suites + metrics | |
 | Reliability metrics pass@k / pass^k, CIs | ❌ | ✅ | |
 | Throughput / latency / tokens | ✅ token/latency in trace UI | ✅ per eval run + per rollout | |
@@ -50,23 +50,31 @@ PyPI [`mantisdk`](https://pypi.org/project/mantisdk/) (0.2.4, MIT), GitHub [meti
 | Job orchestration | ✅ BullMQ/Docker/Nomad/KubeRay | ✅ DB-backed queue + `saphire worker`; K8s manifests | simpler; no per-job containers |
 | Agent manifests / CLI | ✅ `mantis register/run/...` | ✅ `saphire serve/worker/eval/train/demo` + `AgentConfig` JSON | |
 | MCP server to query traces from IDEs | ✅ `@mantisai/mcp` | ❌ | gap (easy: FastMCP over `/v1/traces`) |
-| Multi-agent selective optimisation | ✅ (agent-lightning) | ⚠️ one policy per agent version | gap |
-| Hosted, multi-tenant SaaS, SSO | ✅ (closed) | ❌ single API key | gap |
+| Multi-agent selective optimisation | ✅ (agent-lightning) | ✅ `AgentSystem` roles, per-role credit, `optimize_roles` freezes the rest | tested end-to-end |
+| Distributed RL | ✅ verl wrapper | ✅ Ray/process/thread rollout engine, env/reward server, verl dataset + reward fn, OpenRLHF agent | verl/OpenRLHF runs themselves need GPUs (not in CI) |
+| Multi-tenant SaaS (orgs, keys, quotas, metering) | ✅ (closed) | ✅ orgs, hashed org API keys, plans/quotas (402), rate limits (429), usage metering | self-hosted; no billing integration |
+| SSO / RBAC / audit | ✅ (closed) | ✅ OIDC login + JWT sessions, JIT provisioning by email domain, 4 roles, per-request audit log | SCIM not included |
+| Production evidence | claimed | ❌ none — pilot playbook + case-study template + benchmark harness only | must be earned |
+| Real-world scale | production | ⚠️ measured platform overhead (docs/BENCHMARKS.md), bulk ingest, retention, S3 artifacts, HPA/KEDA, Helm | no production tenant yet |
 
 ## Capability gaps (honest list)
 
-1. **Scale-out RL.** Weight-update training is single-process TRL (PPO not included; GRPO/DPO/SFT are). Multi-node
-   PPO/GRPO with vLLM/SGLang rollouts should use verl, OpenRLHF or agent-lightning; Saphire exports datasets in a format they
-   consume (see `docs/TRAINING.md`). Not executed in this repo's CI because it needs GPUs.
+1. **Scale-out RL.** Rollout collection and evaluation are distributed (Ray); environment rewards are served over HTTP;
+   verl/OpenRLHF integrations exist (dataset export, reward function, agent loop) but the multi-node PPO/GRPO runs themselves
+   are not executed in this repo's CI (no GPUs). Bundled weight updates are single-node TRL (SFT/DPO/GRPO).
 2. **Live-system connectors are generic.** SQL/OpenAPI/MCP/CSV connectors cover most enterprise systems, but there are no
    turnkey Salesforce/Zendesk/Slack adapters and no PII redaction layer for traces (the tracing attribute serialiser is the hook).
 3. **Judges need a hosted model to be meaningful.** The offline heuristic judge exists so pipelines run in CI; production
    judging should point `judge_model` at a real model and calibrate it against human labels (the paper's recipe).
 4. **Mock policy is a test double.** Learning gains shown by `saphire demo` come from the router, exemplars and prompt rules
    acting on a scripted weak policy; with real models the same mechanisms apply but gains must be measured per deployment.
-5. **Security / multi-tenancy.** One API key, per-project scoping only; no RBAC, audit log or secret store.
+5. **Enterprise surface is complete but young.** Orgs, hashed API keys, OIDC SSO, RBAC, audit, quotas, metering and retention
+   are implemented and tested; SCIM, per-project roles, customer-managed keys, billing integration and compliance evidence
+   (SOC 2) are not.
 6. **No per-job sandboxing.** Jobs run in worker processes, not isolated containers (Metis uses Docker/BullMQ).
-7. **Trace MCP server, multi-agent selective optimisation, prompt-template registry** are not implemented.
+7. **Production evidence is zero.** No customer has run this. `docs/PILOT_PLAYBOOK.md` defines how the first deployment
+   produces reproducible evidence from the platform's own records; `docs/BENCHMARKS.md` holds measured platform overhead only.
+8. **Trace MCP server and a prompt-template registry** are not implemented.
 
 ## External dependencies (all permissive licences)
 

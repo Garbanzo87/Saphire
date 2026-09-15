@@ -11,6 +11,7 @@ from typing import Any
 from ..sdk.tools import ToolRegistry
 from ..sdk.types import Reward, Rollout, TaskSpec, ToolSpec
 from .base import Environment, EnvState, register_environment
+from .verify_utils import effective_calls, step_tool_rewards, tool_selection_scores
 
 METRICS = {"daily_active_users": 1200, "signups": 85, "churn_rate": 0.031, "revenue": 45210.5, "error_rate": 0.012}
 TABLES = {"events": ["event_id", "user_id", "name", "ts"], "users": ["user_id", "plan", "created_at"],
@@ -170,14 +171,10 @@ class DataOpsEnv(Environment):
 
     def verify(self, task: TaskSpec, rollout: Rollout, state: EnvState) -> list[Reward]:
         exp, d = task.expected, state.data
-        called = [tc.name for tc in rollout.tool_calls]
+        called = effective_calls(rollout)
         checks = {}
-        es, cs = set(exp["tools"]), set(called)
-        tp = len(es & cs)
-        prec = tp / len(cs) if cs else 0.0
-        rec = tp / len(es)
-        f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
-        checks["all_expected_tools_called"] = es <= cs
+        es = set(exp["tools"])
+        f1, checks["all_expected_tools_called"] = tool_selection_scores(exp["tools"], called)
         if "alert" in exp:
             checks["alert"] = any(a["metric"] == exp["alert"]["metric"] and abs(a["threshold"] - exp["alert"]["threshold"]) < 1e-6 for a in d["alerts"])
         if "report" in exp:
@@ -191,8 +188,5 @@ class DataOpsEnv(Environment):
                    Reward(value=f1, source="verifier", name="tool_selection_f1"),
                    Reward(value=min(1.0, len(es) / max(1, len(called))), source="verifier", name="step_efficiency"),
                    Reward(value=1.0 if not any(r.error for s in rollout.steps for r in s.tool_results) else 0.5, source="verifier", name="tool_error_free")]
-        for s in rollout.steps:
-            for tc in s.response.tool_calls:
-                rewards.append(Reward(value=1.0 if tc.name in es else -1.0, source="verifier", name="tool_correct", step_index=s.index,
-                                      metadata={"tool": tc.name}))
+        rewards.extend(step_tool_rewards(rollout, exp["tools"]))
         return rewards

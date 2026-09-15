@@ -1,0 +1,62 @@
+image:
+  repository: ghcr.io/OWNER/saphire
+  tag: latest
+  pullPolicy: IfNotPresent
+dashboardImage:
+  repository: ghcr.io/OWNER/saphire-dashboard
+  tag: latest
+
+# Secrets are read from an existing Secret (create it out of band or via `secrets.create: true`).
+secrets:
+  create: true
+  name: saphire-secrets
+  values:
+    SAPHIRE_DATABASE_URL: postgresql+psycopg://saphire:CHANGEME@postgres:5432/saphire
+    SAPHIRE_API_KEY: CHANGEME-root-key            # bootstrap superadmin; rotate after creating org keys
+    SAPHIRE_JWT_SECRET: CHANGEME-long-random
+    SAPHIRE_OIDC_ISSUER: ""                       # e.g. https://login.microsoftonline.com/<tenant>/v2.0
+    SAPHIRE_OIDC_CLIENT_ID: ""
+    SAPHIRE_OIDC_CLIENT_SECRET: ""
+    OPENAI_API_KEY: ""
+    ANTHROPIC_API_KEY: ""
+    AWS_ACCESS_KEY_ID: ""
+    AWS_SECRET_ACCESS_KEY: ""
+
+env:
+  SAPHIRE_ARTIFACT_STORE: ""                     # s3://bucket/prefix -> no shared volume needed
+  SAPHIRE_ARTIFACTS_DIR: /artifacts
+  SAPHIRE_OIDC_REDIRECT_URL: https://api.example.com/v1/auth/callback
+  SAPHIRE_FRONTEND_URL: https://app.example.com
+  SAPHIRE_CORS_ORIGINS: '["https://app.example.com"]'
+  SAPHIRE_RATE_LIMIT_RPM: "0"
+  SAPHIRE_RETENTION_DAYS: "90"
+  RAY_ADDRESS: ""                                # set to a Ray head service to use backend=ray for rollouts
+
+api:
+  replicas: 2
+  resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { cpu: "1", memory: 2Gi } }
+  autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 10, targetCPU: 65 }
+worker:
+  replicas: 2
+  resources: { requests: { cpu: "1", memory: 2Gi }, limits: { cpu: "4", memory: 8Gi } }
+  gpu: 0                                         # set 1 for sft/dpo/grpo workers (image built with EXTRAS=train)
+  keda:                                          # scale workers on pending jobs (requires KEDA)
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 20
+    pendingJobsPerReplica: 2
+envServer:
+  enabled: false                                 # standalone env/reward server for external RL trainers
+  replicas: 1
+dashboard:
+  replicas: 1
+artifacts:
+  pvc: { enabled: true, size: 50Gi, storageClass: "" }   # only needed when SAPHIRE_ARTIFACT_STORE is empty
+retention:
+  cron: "0 3 * * *"
+ingress:
+  enabled: false
+  className: nginx
+  apiHost: api.example.com
+  appHost: app.example.com
+  tls: []

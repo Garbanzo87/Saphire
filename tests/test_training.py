@@ -77,3 +77,12 @@ def test_trl_smoke(tmp_path):
     assert "reward_curve" in r
     assert T.replay_reward('<tool_call>{"name": "lookup_order", "arguments": {"order_id": "ORD-2001"}}</tool_call>', "support_desk", "x", [], ["lookup_order"]) == 1.0
     assert T.replay_reward("garbage", "support_desk", "x", [], ["lookup_order"]) < 0
+
+
+def test_online_loop_with_thread_engine(tmp_path):
+    train = build_suite("smoke", n_per_env=10, seed=100)
+    ev = build_suite("smoke", n_per_env=6, seed=200)
+    loop = OnlineLoop(AgentConfig(name="t2", model="mock:error=0.3,seed=3", router_top_k=8), train, ev, artifacts_dir=tmp_path,
+                      batch_size=10, seed=1, rollout_backend="thread", rollout_workers=2)
+    hist = loop.run(2)
+    assert len(hist) == 3 and hist[-1]["buffer"] == 20 and loop.config.tool_router

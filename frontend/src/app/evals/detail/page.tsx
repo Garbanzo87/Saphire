@@ -3,8 +3,8 @@ import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { fetcher, q, type Comparison, type EvalDetail, type EvalRun, type Metrics } from "@/lib/api";
-import { delta, isActive, ms, pct, pval, ts } from "@/lib/format";
+import { fetcher, q, type Comparison, type EvalDetail, type EvalRun, type Metrics, type RoleMetrics } from "@/lib/api";
+import { delta, isActive, ms, num, pct, pval, ts } from "@/lib/format";
 import { JsonView } from "@/components/JsonView";
 import { MetricsGrid } from "@/components/MetricsGrid";
 import { MetricBarChart } from "@/components/charts";
@@ -17,6 +17,34 @@ function Breakdown({ title, data }: { title: string; data?: Record<string, Metri
   return (
     <Panel title={title}>
       {rows.length === 0 ? <div className="text-[var(--muted)]">No breakdown.</div> : <MetricBarChart data={rows} xKey="name" series={[{ key: "task_success" }, { key: "tool_selection_f1" }, { key: "context_preservation" }]} height={200} />}
+    </Panel>
+  );
+}
+
+function PerRoleCredit({ byRole }: { byRole: Record<string, RoleMetrics> }) {
+  const rows = Object.entries(byRole).sort((a, b) => (b[1].step_reward ?? 0) - (a[1].step_reward ?? 0));
+  const chart = rows.map(([role, m]) => ({ role, step_reward: m.step_reward ?? 0 }));
+  return (
+    <Panel title="Per-role credit" actions={<Chip status="agent">multi-agent</Chip>}>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead><tr><th>Role</th><th>Step reward</th><th>Steps / rollout</th><th>Tool calls / rollout</th><th>n</th></tr></thead>
+            <tbody>
+              {rows.map(([role, m]) => (
+                <tr key={role}>
+                  <td className="font-medium">{role}</td>
+                  <td className={`tabular-nums ${(m.step_reward ?? 0) < 0 ? "text-rose-300" : (m.step_reward ?? 0) > 0.5 ? "text-emerald-300" : ""}`}>{pct(m.step_reward)}</td>
+                  <td className="tabular-nums">{num(m.steps_per_rollout, 2)}</td>
+                  <td className="tabular-nums">{num(m.tool_calls_per_rollout, 2)}</td>
+                  <td className="tabular-nums">{num(m.n, 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <MetricBarChart data={chart} xKey="role" series={[{ key: "step_reward", label: "step reward" }]} height={220} />
+      </div>
     </Panel>
   );
 }
@@ -129,6 +157,7 @@ function EvalView() {
                   <GateView gate={gate} />
                 </Panel>
               )}
+              {e.by_role && Object.keys(e.by_role).length > 0 && <PerRoleCredit byRole={e.by_role} />}
               <div className="grid gap-4 xl:grid-cols-3">
                 <Breakdown title="By family" data={e.by_family} />
                 <Breakdown title="By environment" data={e.by_env} />

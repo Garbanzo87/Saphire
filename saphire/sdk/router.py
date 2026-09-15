@@ -144,7 +144,9 @@ class ToolRouter:
 
     @classmethod
     def load(cls, path: str | Path) -> "ToolRouter":
-        path = Path(path)
+        from .artifacts import resolve
+
+        path = Path(resolve(str(path), siblings=("npz",)))
         meta = json.loads(path.with_suffix(".json").read_text())
         r = cls(meta["tool_names"], dim=meta["dim"], alpha=meta["alpha"])
         arr = np.load(str(path.with_suffix(".npz")))

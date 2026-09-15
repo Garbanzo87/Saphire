@@ -20,11 +20,11 @@ export function MetricLineChart({
 }) {
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <LineChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: -8 }}>
+      <LineChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: percent ? -8 : 24 }}>
         <CartesianGrid stroke="#232a38" strokeDasharray="3 3" />
         <XAxis dataKey={xKey} {...axis} />
-        <YAxis {...axis} domain={percent ? [0, 1] : ["auto", "auto"]} tickFormatter={(v) => (percent ? `${Math.round(v * 100)}%` : v)} />
-        <Tooltip {...tooltipStyle} formatter={(v) => (percent && typeof v === "number" ? `${(v * 100).toFixed(1)}%` : String(v))} />
+        <YAxis {...axis} domain={percent ? [0, 1] : [0, "auto"]} tickFormatter={(v) => (percent ? `${Math.round(v * 100)}%` : typeof v === "number" ? v.toLocaleString() : v)} />
+        <Tooltip {...tooltipStyle} formatter={(v) => (percent && typeof v === "number" ? `${(v * 100).toFixed(1)}%` : typeof v === "number" ? v.toLocaleString() : String(v))} />
         {series.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
         {series.map((s, i) => (
           <Line key={s.key} type="monotone" dataKey={s.key} name={s.label || s.key} stroke={SERIES_COLORS[i % SERIES_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls isAnimationActive={false} />
@@ -52,7 +52,7 @@ export function MetricBarChart({
       <BarChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: -8 }}>
         <CartesianGrid stroke="#232a38" strokeDasharray="3 3" vertical={false} />
         <XAxis dataKey={xKey} {...axis} />
-        <YAxis {...axis} domain={percent ? [0, 1] : ["auto", "auto"]} tickFormatter={(v) => (percent ? `${Math.round(v * 100)}%` : v)} />
+        <YAxis {...axis} domain={percent ? [(min: number) => Math.min(0, min), 1] : ["auto", "auto"]} tickFormatter={(v) => (percent ? `${Math.round(v * 100)}%` : v)} />
         <Tooltip {...tooltipStyle} cursor={{ fill: "#181d28" }} formatter={(v) => (percent && typeof v === "number" ? `${(v * 100).toFixed(1)}%` : String(v))} />
         {series.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
         {series.map((s, i) => (

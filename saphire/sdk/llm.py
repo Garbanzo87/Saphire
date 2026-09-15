@@ -48,7 +48,8 @@ def _tokens(s: str) -> set[str]:
 
 def _clauses(text: str) -> list[str]:
     parts = re.split(r"\bthen\b|\bafter that\b|;|\. |\? |\n|, and |\band then\b|\bfinally\b", text, flags=re.I)
-    return [p.strip(" .,") for p in parts if p.strip(" .,")]
+    out = [p.strip(" .,") for p in parts if p.strip(" .,")]
+    return [p for p in out if not p.lower().startswith("context:")]
 
 
 class MockLLM:
@@ -108,8 +109,14 @@ class MockLLM:
             if val is None and pname == "direction":
                 m = re.search(r"\b(above|below)\b", clause, flags=re.I)
                 val = m.group(1).lower() if m else None
-            if val is None and pname in ("reason", "message", "query", "text", "note", "body", "question", "subject"):
+            if val is None and pname in ("reason", "message", "query", "text", "note", "body", "question", "subject", "task"):
                 val = clause
+            if val is None and pname == "context":
+                ids = []
+                for pat in _ID_PATTERNS.values():
+                    ids += [m if isinstance(m, str) else m[0] for m in re.findall(pat, visible_text)]
+                ids = [i for i in ids if not re.fullmatch(r"\$?\d+(?:\.\d+)?", str(i))]
+                val = ", ".join(dict.fromkeys(ids)) or None
             if val is None and pname in ("address", "new_address"):
                 m = re.search(r"\bto\s+(.+)$", clause, flags=re.I)
                 val = m.group(1) if m else clause

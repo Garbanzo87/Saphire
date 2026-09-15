@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saphire"
-version = "0.1.0"
+version = "0.2.0"
 description = "Saphire: turn first-party data, tools and environments into a continuously learning agent stack (tracing, signal generation, offline/online RL, pre-deployment evaluation)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -36,8 +36,14 @@ mcp = ["mcp>=1.0"]
 train = ["torch>=2.2", "transformers>=4.40", "trl>=0.9", "peft>=0.10", "datasets>=2.19", "accelerate>=0.30"]
 # Postgres in production
 postgres = ["psycopg[binary]>=3.1"]
+# Distributed rollouts (Ray) + parquet export for verl
+distributed = ["ray[default]>=2.9", "pyarrow>=14"]
+# S3-compatible artifact storage
+s3 = ["boto3>=1.34"]
+# SSO (OIDC) + JWT sessions
+auth = ["pyjwt[crypto]>=2.8", "authlib>=1.3"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.10"]
-all = ["saphire[providers,mcp,train,postgres,dev]"]
+all = ["saphire[providers,mcp,train,postgres,distributed,s3,auth,dev]"]
 
 [project.scripts]
 saphire = "saphire.cli:app"

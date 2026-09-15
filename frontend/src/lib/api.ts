@@ -32,9 +32,28 @@ export interface AgentConfig {
   router_top_k?: number | null;
   exemplar_store?: string | null;
   exemplar_k?: number | null;
+  roles?: Record<string, RoleConfig>;
+  orchestrator_prompt?: string | null;
+  orchestrator_tools?: string[];
   metadata?: Record<string, unknown>;
   [k: string]: unknown;
 }
+export interface RoleConfig {
+  description?: string;
+  system_prompt?: string | null;
+  model?: string | null;
+  tool_names?: string[];
+  tool_tags?: string[];
+  tool_router?: string | null;
+  router_top_k?: number | null;
+  exemplar_store?: string | null;
+  exemplar_k?: number | null;
+  max_steps?: number;
+  trainable?: boolean;
+  temperature?: number;
+  [k: string]: unknown;
+}
+export type RoleMetrics = { step_reward?: number; steps_per_rollout?: number; tool_calls_per_rollout?: number; n?: number; [k: string]: number | undefined };
 export interface Agent {
   id: string;
   project_id: string;
@@ -75,6 +94,7 @@ export interface EvalRun {
   by_family?: Record<string, Metrics>;
   by_env?: Record<string, Metrics>;
   by_difficulty?: Record<string, Metrics>;
+  by_role?: Record<string, RoleMetrics>;
   n_tasks: number;
   created_at: number;
   finished_at: number | null;
@@ -333,6 +353,124 @@ export interface Paged<T> {
   items: T[];
 }
 
+// ---- auth / org / audit -------------------------------------------------------
+export interface Session {
+  token?: string;
+  apiKey?: string;
+  org?: string;
+}
+const SESSION_KEY = "saphire.session";
+let sessionCache: Session | null = null;
+
+export function getSession(): Session {
+  if (sessionCache) return sessionCache;
+  try {
+    if (typeof window !== "undefined") {
+      const raw = window.localStorage.getItem(SESSION_KEY);
+      sessionCache = raw ? (JSON.parse(raw) as Session) : {};
+    } else sessionCache = {};
+  } catch {
+    sessionCache = {};
+  }
+  return sessionCache!;
+}
+export function setSession(patch: Session) {
+  const next: Session = { ...getSession(), ...patch };
+  for (const k of Object.keys(next) as (keyof Session)[]) if (!next[k]) delete next[k];
+  sessionCache = next;
+  try {
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+  } catch {}
+}
+export function clearSession() {
+  sessionCache = {};
+  try {
+    window.localStorage.removeItem(SESSION_KEY);
+  } catch {}
+}
+/** Headers used for every API request (Bearer token wins over API key). */
+export function authHeaders(): Record<string, string> {
+  const s = getSession();
+  const h: Record<string, string> = s.token ? { authorization: `Bearer ${s.token}` } : { "x-api-key": s.apiKey || API_KEY };
+  if (s.org) h["x-org"] = s.org;
+  return h;
+}
+
+export interface AuthConfig {
+  oidc: boolean;
+  dev_login: boolean;
+  login_url: string | null;
+}
+export interface Me {
+  actor_type: "root" | "user" | "api_key" | string;
+  label: string;
+  role: string;
+  org: string | null;
+  user: { id: string; email: string; name: string; is_superadmin: boolean } | null;
+  orgs: { slug: string; name: string; role: string }[];
+  permissions: string[];
+}
+export interface Org {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  quotas: Record<string, number>;
+  settings: { allowed_email_domains?: string[]; retention_days?: number; default_role?: string; [k: string]: unknown };
+  created_at: number;
+  effective_quotas: Record<string, number>;
+  n_members: number;
+  n_projects: number;
+  n_api_keys: number;
+  you?: { actor_type: string; label: string; role: string };
+}
+export interface Member {
+  membership_id: string;
+  user_id: string;
+  email: string;
+  name: string;
+  role: string;
+  sso_provider: string | null;
+  last_login_at: number | null;
+  created_at: number;
+}
+export interface ApiKey {
+  id: string;
+  org_id: string;
+  name: string;
+  prefix: string;
+  role: string;
+  created_by: string;
+  created_at: number;
+  last_used_at: number | null;
+  expires_at: number | null;
+  revoked_at: number | null;
+  key?: string; // only on create
+}
+export interface Usage {
+  days: number;
+  totals: Record<string, number>;
+  daily: Record<string, Record<string, number>>;
+  quotas: Record<string, number>;
+  plan: string;
+}
+export interface AuditItem {
+  id: string;
+  org_id: string;
+  actor_type: string;
+  actor_id: string;
+  actor_label: string;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  method: string;
+  path: string;
+  status_code: number;
+  ip: string;
+  details: Record<string, unknown>;
+  created_at: number;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -354,7 +492,7 @@ export async function api<T>(
 ): Promise<T> {
   const res = await fetch(url(path, opts.params), {
     method: opts.method || "GET",
-    headers: { "x-api-key": API_KEY, ...(opts.body !== undefined ? { "content-type": "application/json" } : {}) },
+    headers: { ...authHeaders(), ...(opts.body !== undefined ? { "content-type": "application/json" } : {}) },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   if (!res.ok) {
@@ -363,8 +501,14 @@ export async function api<T>(
       const j = await res.json();
       msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail ?? j);
     } catch {}
+    if (res.status === 401 && typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      // Session is invalid / missing: drop a stale token and go to the login page.
+      if (getSession().token) setSession({ token: undefined });
+      window.location.href = "/login/";
+    }
     throw new ApiError(res.status, msg);
   }
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -394,4 +538,15 @@ export const Api = {
     api<Experiment>("/v1/experiments", { method: "POST", body }),
   stopExperiment: (id: string) => api<Experiment>(`/v1/experiments/${id}/stop`, { method: "POST" }),
   cancelJob: (id: string) => api<Job>(`/v1/jobs/${id}/cancel`, { method: "POST" }),
+  // auth / org
+  authConfig: () => api<AuthConfig>("/v1/auth/config", { params: { project: undefined } }),
+  devLogin: (body: { email: string; name?: string; org?: string | null; role?: string }) => api<{ token: string }>("/v1/auth/dev-login", { method: "POST", body, params: { project: undefined } }),
+  me: () => api<Me>("/v1/auth/me"),
+  orgs: () => api<Org[]>("/v1/orgs"),
+  currentOrg: () => api<Org>("/v1/orgs/current"),
+  patchOrg: (body: { name?: string; plan?: string; quotas?: Record<string, number>; settings?: Record<string, unknown> }) => api<Org>("/v1/orgs/current", { method: "PATCH", body }),
+  addMember: (body: { email: string; role: string; name?: string }) => api<Member>("/v1/orgs/current/members", { method: "POST", body }),
+  removeMember: (id: string) => api<unknown>(`/v1/orgs/current/members/${id}`, { method: "DELETE" }),
+  createKey: (body: { name: string; role: string; expires_in_days: number | null }) => api<ApiKey>("/v1/orgs/current/keys", { method: "POST", body }),
+  revokeKey: (id: string) => api<unknown>(`/v1/orgs/current/keys/${id}`, { method: "DELETE" }),
 };

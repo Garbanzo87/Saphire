@@ -56,7 +56,12 @@ function AgentsTable() {
                 {agents.map((a) => (
                   <tr key={a.id}>
                     <td className="font-medium">
-                      <Link href={`/agents/detail?id=${a.id}`} className="hover:underline">{a.name}</Link>
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <Link href={`/agents/detail?id=${a.id}`} className="hover:underline">{a.name}</Link>
+                        {a.config?.roles && Object.keys(a.config.roles).length > 0 && (
+                          <Chip status="agent">multi-agent · {Object.keys(a.config.roles).length} roles</Chip>
+                        )}
+                      </span>
                       <div className="mono text-[11px] text-[var(--muted)]">{a.id}</div>
                     </td>
                     <td className="mono">{a.version}</td>

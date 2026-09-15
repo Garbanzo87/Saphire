@@ -7,8 +7,56 @@ import { fetcher, type Metrics, type TrainingRun } from "@/lib/api";
 import { delta, isActive, num, pct, ts } from "@/lib/format";
 import { JsonView } from "@/components/JsonView";
 import { MetricsGrid } from "@/components/MetricsGrid";
-import { MetricLineChart } from "@/components/charts";
+import { MetricBarChart, MetricLineChart } from "@/components/charts";
 import { Chip, DataState, ErrorBox, Expander, IdLink, Logs, PageHeader, Panel, Progress, Stat } from "@/components/ui";
+
+type RoleResult = { router?: { artifact?: string; examples?: number; positives?: number; fit?: { final_loss?: number; epochs?: number } }; exemplars?: { artifact?: string; added?: number; size?: number }; prompt?: unknown; [k: string]: unknown };
+
+function SelectivePanel({ roles, frozen, reward, requested }: { roles?: Record<string, RoleResult>; frozen?: string[]; reward?: Record<string, number>; requested?: string[] }) {
+  const updated = Object.keys(roles || {});
+  const all = Array.from(new Set([...updated, ...(frozen || []), ...Object.keys(reward || {})]));
+  const chart = all.map((r) => ({ role: r, step_reward: reward?.[r] ?? 0, status: updated.includes(r) ? "updated" : "frozen" }));
+  return (
+    <Panel title="Selective optimisation" actions={<Chip status="agent">multi-agent</Chip>}>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2 text-[12px]">
+          <span className="label">updated</span>
+          {updated.length ? updated.map((r) => <Chip key={r} status="updated">{r}</Chip>) : <span className="text-[var(--muted)]">none</span>}
+          <span className="label ml-3">frozen</span>
+          {(frozen || []).length ? (frozen || []).map((r) => <Chip key={r} status="frozen">{r}</Chip>) : <span className="text-[var(--muted)]">none</span>}
+          {requested && <span className="ml-3 text-[var(--muted)]">requested: {requested.join(", ")}</span>}
+        </div>
+        <div className="grid gap-4 xl:grid-cols-2">
+          <div className="overflow-x-auto">
+            <table className="tbl">
+              <thead><tr><th>Role</th><th>Status</th><th>Step reward</th><th>Learned</th></tr></thead>
+              <tbody>
+                {all.map((r) => {
+                  const rr = roles?.[r];
+                  const v = reward?.[r];
+                  return (
+                    <tr key={r}>
+                      <td className="font-medium">{r}</td>
+                      <td><Chip status={updated.includes(r) ? "updated" : "frozen"} /></td>
+                      <td className={`tabular-nums ${(v ?? 0) < 0 ? "text-rose-300" : (v ?? 0) > 0.5 ? "text-emerald-300" : ""}`}>{pct(v)}</td>
+                      <td className="text-[12px] text-[var(--muted)]">
+                        {rr?.router && <div>router · {rr.router.examples ?? "?"} examples ({rr.router.positives ?? "?"} pos) · loss {num(rr.router.fit?.final_loss, 3)}</div>}
+                        {rr?.exemplars && <div>exemplars · +{rr.exemplars.added ?? "?"} (store {rr.exemplars.size ?? "?"})</div>}
+                        {rr?.prompt !== undefined && <div>prompt updated</div>}
+                        {!rr && "–"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {reward && <MetricBarChart data={chart} xKey="role" series={[{ key: "step_reward", label: "step reward" }]} height={220} />}
+        </div>
+      </div>
+    </Panel>
+  );
+}
 
 function TrainingView() {
   const id = useSearchParams().get("id") || "";
@@ -19,7 +67,8 @@ function TrainingView() {
   return (
     <DataState data={data} error={error}>
       {(t) => {
-        const res = (t.result || {}) as { baseline?: Metrics; final?: Metrics; improvement?: Record<string, number>; iterations?: number };
+        const res = (t.result || {}) as { baseline?: Metrics; final?: Metrics; improvement?: Record<string, number>; iterations?: number; roles?: Record<string, RoleResult>; frozen?: string[]; role_step_reward?: Record<string, number> };
+        const selective = !!(res.roles || res.frozen || res.role_step_reward);
         const hist = t.history || [];
         const chart = hist.map((h) => ({
           x: `${h.iteration} · ${h.version}`,
@@ -62,6 +111,7 @@ function TrainingView() {
                   ))}
                 </div>
               )}
+              {selective && <SelectivePanel roles={res.roles} frozen={res.frozen} reward={res.role_step_reward} requested={t.params?.optimize_roles as string[] | undefined} />}
               {t.algorithm === "online" || hist.length > 0 ? (
                 <Panel title="Per-iteration eval">
                   {chart.length === 0 ? (

@@ -18,6 +18,7 @@ import copy
 from typing import Any, Callable, Optional
 
 from ..environments.base import Environment, EnvState
+from ..environments.verify_utils import effective_calls, ordered_ok, step_tool_rewards, tool_selection_scores
 from ..sdk.tools import ToolRegistry
 from ..sdk.types import Reward, Rollout, TaskSpec
 
@@ -36,20 +37,14 @@ def _get_path(obj: Any, path: str) -> Any:
 class TaskVerifier:
     def __call__(self, task: TaskSpec, rollout: Rollout, state: EnvState) -> list[Reward]:
         exp = task.expected
-        called = [tc.name for tc in rollout.tool_calls]
+        called = effective_calls(rollout)
         checks: dict[str, bool] = {}
         exp_tools = exp.get("tools", [])
         f1 = 1.0
         if exp_tools:
-            es, cs = set(exp_tools), set(called)
-            tp = len(es & cs)
-            prec = tp / len(cs) if cs else 0.0
-            rec = tp / len(es)
-            f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
-            checks["all_expected_tools_called"] = es <= cs
+            f1, checks["all_expected_tools_called"] = tool_selection_scores(exp_tools, called)
             if exp.get("ordered"):
-                it = iter([n for n in called if n in es])
-                checks["tool_order"] = all(any(x == e for x in it) for e in exp_tools)
+                checks["tool_order"] = ordered_ok(exp_tools, called)
         for s in exp.get("answer_contains", []):
             checks[f"answer_contains:{s}"] = s.lower() in rollout.final_answer.lower()
         for i, chk in enumerate(exp.get("state_checks", [])):
@@ -68,10 +63,7 @@ class TaskVerifier:
                    Reward(value=1.0 if n_err == 0 else max(0.0, 1 - 0.5 * n_err), source="verifier", name="tool_error_free")]
         if exp_tools:
             rewards.append(Reward(value=min(1.0, len(exp_tools) / max(1, len(called))), source="verifier", name="step_efficiency"))
-            for s in rollout.steps:
-                for tc in s.response.tool_calls:
-                    rewards.append(Reward(value=1.0 if tc.name in exp_tools else -1.0, source="verifier", name="tool_correct",
-                                          step_index=s.index, metadata={"tool": tc.name}))
+            rewards.extend(step_tool_rewards(rollout, exp_tools))
         return rewards
 
 

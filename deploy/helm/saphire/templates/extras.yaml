@@ -1,0 +1,62 @@
+{{- if .Values.envServer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: saphire-env-server, labels: { app: saphire-env-server } }
+spec:
+  replicas: {{ .Values.envServer.replicas }}
+  selector: { matchLabels: { app: saphire-env-server } }
+  template:
+    metadata: { labels: { app: saphire-env-server } }
+    spec:
+      containers:
+        - name: env-server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["saphire", "env-server", "--port", "8010"]
+          {{- include "saphire.envFrom" . | nindent 10 }}
+          ports: [{ containerPort: 8010 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: saphire-env-server }
+spec:
+  sessionAffinity: ClientIP          # stateful env sessions must stick to a replica
+  selector: { app: saphire-env-server }
+  ports: [{ port: 8010, targetPort: 8010 }]
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: saphire-dashboard, labels: { app: saphire-dashboard } }
+spec:
+  replicas: {{ .Values.dashboard.replicas }}
+  selector: { matchLabels: { app: saphire-dashboard } }
+  template:
+    metadata: { labels: { app: saphire-dashboard } }
+    spec:
+      containers:
+        - name: dashboard
+          image: "{{ .Values.dashboardImage.repository }}:{{ .Values.dashboardImage.tag }}"
+          ports: [{ containerPort: 3000 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: saphire-dashboard }
+spec:
+  selector: { app: saphire-dashboard }
+  ports: [{ port: 3000, targetPort: 3000 }]
+{{- if .Values.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: saphire }
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tls }}
+  tls: {{ toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.apiHost }}
+      http: { paths: [{ path: /, pathType: Prefix, backend: { service: { name: saphire-api, port: { number: 8000 } } } }] }
+    - host: {{ .Values.ingress.appHost }}
+      http: { paths: [{ path: /, pathType: Prefix, backend: { service: { name: saphire-dashboard, port: { number: 3000 } } } }] }
+{{- end }}
