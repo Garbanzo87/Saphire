@@ -29,6 +29,7 @@ env:
   SAPHIRE_FRONTEND_URL: https://app.example.com
   SAPHIRE_CORS_ORIGINS: '["https://app.example.com"]'
   SAPHIRE_RATE_LIMIT_RPM: "0"
+  SAPHIRE_TRUST_PROXY: "1"  # behind the ingress; used for API-key IP allowlists
   SAPHIRE_RETENTION_DAYS: "90"
   RAY_ADDRESS: ""                                # set to a Ray head service to use backend=ray for rollouts
 

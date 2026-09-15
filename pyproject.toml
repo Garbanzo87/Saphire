@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saphire"
-version = "0.2.0"
+version = "0.3.0"
 description = "Saphire: turn first-party data, tools and environments into a continuously learning agent stack (tracing, signal generation, offline/online RL, pre-deployment evaluation)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -25,6 +25,7 @@ dependencies = [
   "rich>=13.7",
   "pyyaml>=6.0",
   "python-multipart>=0.0.9",
+  "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +51,9 @@ saphire = "saphire.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["saphire*"]
+
+[tool.setuptools.data-files]
+"share/saphire" = ["alembic.ini"]
 
 [tool.setuptools.package-data]
 saphire = ["environments/data/*.json", "environments/data/*.csv"]

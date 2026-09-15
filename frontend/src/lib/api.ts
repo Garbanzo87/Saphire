@@ -471,6 +471,177 @@ export interface AuditItem {
   created_at: number;
 }
 
+// ---- intelligence / attribution / webhooks / signals ---------------------------
+export interface DriftAlert {
+  type: string;
+  metric?: string;
+  family?: string;
+  message?: string;
+  delta?: number;
+  p_value?: number;
+  ratio?: number;
+  value?: number;
+  severity?: string;
+  [k: string]: unknown;
+}
+export interface FailureCluster {
+  kind: string;
+  role: string;
+  tool: string;
+  family: string;
+  count: number;
+  rate: number;
+  baseline_rate: number | null;
+  trend: number | null;
+  examples: string[];
+  tasks: string[];
+}
+export interface Recommendation {
+  priority: number;
+  title: string;
+  why: string;
+  action: { kind: string; algorithm?: string; params?: Record<string, unknown>; what?: string; [k: string]: unknown };
+}
+export interface IntelligenceReport {
+  id: string;
+  project_id: string;
+  agent_name: string | null;
+  recent_hours: number;
+  baseline_hours: number;
+  n_recent: number;
+  n_baseline: number;
+  healthy: boolean;
+  drift: {
+    n_baseline: number;
+    n_recent: number;
+    metrics: Record<string, { baseline: number; recent: number; delta: number; p_value: number }>;
+    alerts: DriftAlert[];
+    note?: string;
+  };
+  failures: { n_rollouts: number; n_failed: number; failure_rate: number; clusters: FailureCluster[]; by_kind?: Record<string, number>; by_role?: Record<string, number> };
+  coverage: {
+    production_patterns?: number;
+    covered_patterns?: number;
+    uncovered_patterns: number;
+    uncovered_traffic_share: number;
+    top_uncovered?: { tools: string[]; count: number }[];
+    tools_never_evaluated?: string[];
+    minable_tasks?: number;
+  };
+  recommendations: Recommendation[];
+  job_id: string | null;
+  created_at: number;
+}
+export type IntelligenceReportSummary = Pick<IntelligenceReport, "id" | "agent_name" | "recent_hours" | "baseline_hours" | "n_recent" | "n_baseline" | "healthy" | "created_at" | "recommendations"> & {
+  n_alerts: number;
+  n_recommendations: number;
+};
+export interface ApplyResult {
+  kind: string;
+  job_id?: string;
+  training_run_id?: string;
+  algorithm?: string;
+  dataset_id?: string;
+  n_tasks?: number;
+  [k: string]: unknown;
+}
+export interface MineResult {
+  dataset_id: string;
+  n_tasks: number;
+  from_rollouts: number;
+  families: string[];
+}
+
+export interface AttributionResult {
+  agent_id: string;
+  agent_version: string;
+  dataset_id: string;
+  n_tasks: number;
+  ablation?: {
+    baseline: number;
+    roles: Record<string, { upgraded: number; headroom: number; degraded: number; criticality: number }>;
+    reference_model?: string | null;
+    degraded_model?: string | null;
+    all_upgraded?: number;
+    total_headroom?: number;
+  };
+  shapley?: {
+    baseline: number;
+    all_upgraded: number;
+    shapley: Record<string, number>;
+    share?: Record<string, number>;
+    n_permutations: number;
+    n_evaluations: number;
+    reference_model?: string | null;
+  };
+  recommendation?: { optimize_roles: string[]; reason: string };
+}
+export interface AttributionJob extends Omit<Job, "result"> {
+  result: AttributionResult | null;
+}
+export interface EvalAttribution {
+  eval_run_id: string;
+  credit: {
+    n_rollouts: number;
+    n_failed: number;
+    roles: Record<
+      string,
+      {
+        rollouts: number;
+        fault_share: number;
+        first_faults: number;
+        fault_kinds: Record<string, number>;
+        success_when_clean: number | null;
+        success_when_faulty: number | null;
+        advantage: number | null;
+        mistake_rate: number;
+      }
+    >;
+  };
+  blame: { role: string; step_index: number | null; tool: string | null; kind: string; detail: string; success: boolean; rollout_id: string; task_id: string }[];
+  by_kind?: Record<string, number>;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  webhook_id: string;
+  event: string;
+  payload: Record<string, unknown>;
+  status_code: number;
+  error: string;
+  attempts: number;
+  created_at: number;
+}
+export interface Webhook {
+  id: string;
+  org_id: string;
+  url: string;
+  events: string[];
+  description: string;
+  active?: boolean;
+  created_at: number;
+  last_delivery: WebhookDelivery | null;
+  secret?: string; // only on create
+  note?: string;
+}
+
+export interface Calibration {
+  n: number;
+  judge: string;
+  paired_rollouts: number;
+  note?: string;
+  agreement?: number;
+  kappa?: number;
+  precision?: number;
+  recall?: number;
+  f1?: number;
+  threshold?: number;
+  best_threshold?: number;
+  best_agreement?: number;
+  reliability?: Record<string, { n: number; human_positive_rate: number }>;
+}
+export type ToolStats = Record<string, { calls: number; error_rate: number; success_rate: number; latency_ms: number; confused_with: Record<string, number> }>;
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -549,4 +720,18 @@ export const Api = {
   removeMember: (id: string) => api<unknown>(`/v1/orgs/current/members/${id}`, { method: "DELETE" }),
   createKey: (body: { name: string; role: string; expires_in_days: number | null }) => api<ApiKey>("/v1/orgs/current/keys", { method: "POST", body }),
   revokeKey: (id: string) => api<unknown>(`/v1/orgs/current/keys/${id}`, { method: "DELETE" }),
+  // intelligence
+  runIntelligence: (body: { agent_name: string | null; recent_hours: number; baseline_hours: number; production_only: boolean }) =>
+    api<IntelligenceReport>("/v1/intelligence/run", { method: "POST", body: { ...body, sync: true } }),
+  applyRecommendation: (body: { recommendation: Recommendation; agent_id: string | null; train_dataset_id: string | null; eval_dataset_id: string | null }) =>
+    api<ApplyResult>("/v1/intelligence/apply", { method: "POST", body }),
+  mineTasks: (body: { name: string; since_hours: number; production_only: boolean }) => api<MineResult>("/v1/intelligence/mine-tasks", { method: "POST", body }),
+  // attribution
+  createAttribution: (body: { agent_id: string; dataset_id: string; reference_model: string | null; degraded_model: string | null; shapley: boolean; n_permutations: number }) =>
+    api<AttributionJob>("/v1/attribution", { method: "POST", body }),
+  job: (id: string) => api<Job>(`/v1/jobs/${id}`),
+  // webhooks
+  createWebhook: (body: { url: string; events: string[]; description: string; secret?: string }) => api<Webhook>("/v1/orgs/current/webhooks", { method: "POST", body }),
+  deleteWebhook: (id: string) => api<unknown>(`/v1/orgs/current/webhooks/${id}`, { method: "DELETE" }),
+  testWebhook: (id: string) => api<WebhookDelivery[]>(`/v1/orgs/current/webhooks/${id}/test`, { method: "POST" }),
 };

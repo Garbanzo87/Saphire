@@ -86,3 +86,19 @@ def test_online_loop_with_thread_engine(tmp_path):
                       batch_size=10, seed=1, rollout_backend="thread", rollout_workers=2)
     hist = loop.run(2)
     assert len(hist) == 3 and hist[-1]["buffer"] == 20 and loop.config.tool_router
+
+
+def test_prompt_opt_v2_pareto_merge_joint():
+    from saphire.environments.support_desk import multi_agent_config
+    from saphire.training.prompt_opt import Candidate, merge_prompts, pareto_front
+
+    a, b = Candidate({"main": "p"}), Candidate({"main": "q"})
+    a.task_scores, b.task_scores = {"t1": 1.0, "t2": 0.0}, {"t1": 0.0, "t2": 1.0}
+    assert pareto_front([a, b]) == {0: 1, 1: 1}
+    assert merge_prompts("x\nRule: a", "y\nRule: b\nRule: a") == "x\nRule: a\ny\nRule: b"
+    tasks = [t for t in build_suite("full", n_per_env=21, seed=2) if t.env_name == "support_desk"]
+    r = optimize_prompt(multi_agent_config(model="mock:error=0.4,seed=1"), tasks, iterations=4, minibatch=8, seed=0, target="joint", max_rollouts=60)
+    assert set(r["targets"]) == {"orchestrator", "orders", "customers", "tickets", "billing"} and r["rollouts_used"] <= 60 + 8
+    assert r["best_score"] >= r["baseline_score"] and "best_config" in r and r["best_config"]["roles"]["orders"]["system_prompt"]
+    r2 = optimize_prompt(AgentConfig(model="mock:error=0.5,seed=2", router_top_k=8), tasks, iterations=3, minibatch=8, seed=0, families=["cancel_email"])
+    assert r2["targets"] == ["main"] and any(h.get("origin") == "merge:0+1" or h.get("origin", "").startswith("merge") or h.get("origin") == "reflect" for h in r2["history"])

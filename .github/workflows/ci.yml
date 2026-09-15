@@ -17,6 +17,29 @@ jobs:
           SAPHIRE_INLINE_JOBS=1 saphire serve --port 8000 > server.log 2>&1 &
           for i in $(seq 1 30); do curl -sf localhost:8000/health && break; sleep 1; done
           saphire demo --iterations 2
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: saphire, POSTGRES_PASSWORD: saphire, POSTGRES_DB: saphire }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U saphire" --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -e ".[dev,mcp,postgres,auth]"
+      - name: migrations apply cleanly on Postgres
+        run: SAPHIRE_DATABASE_URL=postgresql+psycopg://saphire:saphire@localhost:5432/saphire alembic upgrade head
+      - name: API + job tests against Postgres
+        run: SAPHIRE_TEST_DATABASE_URL=postgresql+psycopg://saphire:saphire@localhost:5432/saphire pytest -q tests/test_server.py tests/test_enterprise.py tests/test_scale.py tests/test_intelligence.py
+      - name: benchmark on Postgres (quick)
+        run: |
+          SAPHIRE_DATABASE_URL=postgresql+psycopg://saphire:saphire@localhost:5432/saphire SAPHIRE_INLINE_JOBS=1 saphire serve --port 8000 > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf localhost:8000/health && break; sleep 1; done
+          saphire bench --host http://localhost:8000 --quick
   training-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 30

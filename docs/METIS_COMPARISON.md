@@ -1,6 +1,6 @@
 # Saphire vs. Metis (withmetis.ai) — verified comparison and capability gaps
 
-Research date: 2026-09-14. Sources: [withmetis.ai](https://www.withmetis.ai/), [docs.withmetis.ai](https://docs.withmetis.ai/),
+Research date: 2026-09-14 (scorecard updated 2026-09-15 for Saphire 0.3.0). Sources: [withmetis.ai](https://www.withmetis.ai/), [docs.withmetis.ai](https://docs.withmetis.ai/),
 PyPI [`mantisdk`](https://pypi.org/project/mantisdk/) (0.2.4, MIT), GitHub [metis-mantis](https://github.com/metis-mantis)
 (`metis-router`, Apache-2.0), arXiv [2603.03565](https://arxiv.org/abs/2603.03565), YC / PitchBook / Fenwick announcements.
 
@@ -50,10 +50,15 @@ PyPI [`mantisdk`](https://pypi.org/project/mantisdk/) (0.2.4, MIT), GitHub [meti
 | Job orchestration | ✅ BullMQ/Docker/Nomad/KubeRay | ✅ DB-backed queue + `saphire worker`; K8s manifests | simpler; no per-job containers |
 | Agent manifests / CLI | ✅ `mantis register/run/...` | ✅ `saphire serve/worker/eval/train/demo` + `AgentConfig` JSON | |
 | MCP server to query traces from IDEs | ✅ `@mantisai/mcp` | ❌ | gap (easy: FastMCP over `/v1/traces`) |
-| Multi-agent selective optimisation | ✅ (agent-lightning) | ✅ `AgentSystem` roles, per-role credit, `optimize_roles` freezes the rest | tested end-to-end |
+| Multi-agent selective optimisation | ✅ (agent-lightning) | ✅ `AgentSystem` roles, per-role credit, `optimize_roles` freezes the rest; joint multi-prompt optimisation | tested end-to-end |
+| Multi-agent attribution (which role to optimise) | ⚠️ implicit in training | ✅ blame, advantage credit, counterfactual role ablation (headroom / criticality), Shapley values, `POST /v1/attribution` | recommendation feeds selective optimisation |
+| Production intelligence (drift, failure clusters, coverage, task mining, recommendations) | ⚠️ claimed ("autonomous post-training agent") | ✅ `saphire.intelligence`, `/v1/intelligence/*`, one-click apply, `intelligence.alert` webhook | see docs/INTELLIGENCE.md |
+| Reward model from first-party signals | ⚠️ claimed | ✅ `RewardModel` on trajectory features, `rm:` judge, calibration (κ, reliability diagram) against human scores | |
+| Tool learning from outcomes | ✅ semantic router | ✅ reward-trained router with reliability prior + learned tool-description hints from confusion statistics | |
+| Webhooks / Prometheus / migrations | ✅ (closed) | ✅ HMAC-signed webhooks with delivery log, `/metrics`, Alembic migrations, Postgres CI job | |
 | Distributed RL | ✅ verl wrapper | ✅ Ray/process/thread rollout engine, env/reward server, verl dataset + reward fn, OpenRLHF agent | verl/OpenRLHF runs themselves need GPUs (not in CI) |
 | Multi-tenant SaaS (orgs, keys, quotas, metering) | ✅ (closed) | ✅ orgs, hashed org API keys, plans/quotas (402), rate limits (429), usage metering | self-hosted; no billing integration |
-| SSO / RBAC / audit | ✅ (closed) | ✅ OIDC login + JWT sessions, JIT provisioning by email domain, 4 roles, per-request audit log | SCIM not included |
+| SSO / RBAC / audit | ✅ (closed) | ✅ OIDC login + JWT sessions, JIT provisioning by email domain, SCIM 2.0 user provisioning, 4 roles, per-request audit log, API-key IP allowlists | |
 | Production evidence | claimed | ❌ none — pilot playbook + case-study template + benchmark harness only | must be earned |
 | Real-world scale | production | ⚠️ measured platform overhead (docs/BENCHMARKS.md), bulk ingest, retention, S3 artifacts, HPA/KEDA, Helm | no production tenant yet |
 
@@ -68,13 +73,39 @@ PyPI [`mantisdk`](https://pypi.org/project/mantisdk/) (0.2.4, MIT), GitHub [meti
    judging should point `judge_model` at a real model and calibrate it against human labels (the paper's recipe).
 4. **Mock policy is a test double.** Learning gains shown by `saphire demo` come from the router, exemplars and prompt rules
    acting on a scripted weak policy; with real models the same mechanisms apply but gains must be measured per deployment.
-5. **Enterprise surface is complete but young.** Orgs, hashed API keys, OIDC SSO, RBAC, audit, quotas, metering and retention
-   are implemented and tested; SCIM, per-project roles, customer-managed keys, billing integration and compliance evidence
-   (SOC 2) are not.
+5. **Enterprise surface is complete but young.** Orgs, hashed API keys (with IP allowlists), OIDC SSO, SCIM, RBAC, audit, quotas,
+   metering, webhooks, Prometheus metrics, migrations and retention are implemented and tested; per-project roles,
+   customer-managed keys, billing integration and compliance evidence (SOC 2) are not.
 6. **No per-job sandboxing.** Jobs run in worker processes, not isolated containers (Metis uses Docker/BullMQ).
 7. **Production evidence is zero.** No customer has run this. `docs/PILOT_PLAYBOOK.md` defines how the first deployment
    produces reproducible evidence from the platform's own records; `docs/BENCHMARKS.md` holds measured platform overhead only.
 8. **Trace MCP server and a prompt-template registry** are not implemented.
+
+## Scorecard (the 18 dimensions used in the user's Metis-vs-Saphire review)
+
+Scores are the reviewer's Metis score and Saphire's self-assessed score after 0.3.0, with what changed. "Proven" means
+demonstrated by tests/benchmarks in this repo, not by customers.
+
+| Dimension | Metis | Saphire 0.2 | Saphire 0.3 | What closed the gap |
+|---|---|---|---|---|
+| Core architecture | 9.5 | 9 | 9.5 | intelligence layer + attribution wired into the same job queue / artifact / versioning model |
+| Tracing & observability | 9 | 9 | 9 | Prometheus `/metrics`, DB span exporter |
+| Environment grounding | 9 | 9 | 9.5 | task mining from production traces, coverage gaps, `SaphireGymEnv` |
+| Reward / signal generation | 9 | 8.5 | 9 | `RewardModel` (`rm:` judge), judge calibration (κ, reliability), human-score overrides |
+| Evaluation | 9.5 | 9 | 9.5 | per-eval blame / advantage credit, drift tests, failure clustering |
+| Prompt optimisation | 10 | 8 | 9.5 | v2: per-task Pareto front, reflect + merge, joint multi-role optimisation, rollout budget |
+| Tool learning | 9 | 8.5 | 9.5 | reliability prior in the router, learned tool-description hints from confusion stats |
+| Continual-learning orchestration | 10 | 9 | 9.5 | recommendations → one-click training runs, scheduled intelligence jobs, webhooks |
+| SFT / DPO / GRPO | 9 | 9 | 9 | unchanged (TRL, CPU smoke in CI) |
+| Distributed RL | 10 | 8.5 | 9 | gym adapter, verl/OpenRLHF integrations; multi-node runs still not executed in CI (GPUs) |
+| Multi-agent attribution | 10 | 5.5 | 9.5 | blame, advantage credit, role ablation, Shapley, dashboard |
+| Deployment safety | 9 | 9 | 9 | unchanged (gates, permissions, auto-promote requires deploy right) |
+| Platform backend | 9.5 | 8.5 | 9.5 | Alembic migrations, Postgres CI, `/metrics`, webhooks, IP allowlists, race-safe metering |
+| Dashboard | 9 | 8.5 | 9 | Intelligence, Attribution, Signals, Webhooks pages; eval blame panel |
+| Enterprise layer | 9.5 | 8 | 9 | SCIM 2.0, IP allowlists, webhooks; billing / SOC 2 evidence still absent |
+| Production scalability | 10 | 6.5 | 7.5 | measured benchmarks + Postgres CI + autoscaling; unproven at a real tenant's scale |
+| Production intelligence | 10 | 2 | 9 | `saphire.intelligence` (drift, clusters, coverage, mining, recommendations, apply) |
+| Enterprise customer validation | 10 | 0 | **0** | cannot be built in code — see docs/PILOT_PLAYBOOK.md |
 
 ## External dependencies (all permissive licences)
 

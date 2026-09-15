@@ -193,6 +193,26 @@ def demo(host: str = "http://localhost:8000", api_key: str = "dev-key", project:
             p = 0.55 if a["variant"] == "control" else 0.8
             c.record_outcome(exp["id"], f"user-{i}", 1.0 if rng.random() < p else 0.0, a["variant"])
         rprint("experiment:", c.get(f"/experiments/{exp['id']}")["results"])
+        # multi-agent system: eval -> per-role attribution (blame / advantage / ablation / Shapley)
+        from .environments.support_desk import multi_agent_config
+
+        ma_ds = c.create_dataset("support multi-agent", suite="tool_selection", n_per_env=16, seed=404)
+        ma = c.create_agent(multi_agent_config(model="mock:error=0.35,seed=5", name="support-system"))
+        c.run_eval(ma["id"], ma_ds["id"], k=1, judge_model="mock", wait=True)
+        attr = c.post("/attribution", json={"agent_id": ma["id"], "dataset_id": ma_ds["id"], "reference_model": "mock",
+                                            "degraded_model": "mock:error=0.9", "shapley": True, "n_permutations": 4})
+        attr = c.wait_job(attr["id"])
+        rprint("attribution:", (attr.get("result") or {}).get("recommendation"))
+        # production intelligence: drift / failure clusters / coverage / recommendations
+        rep = c.post("/intelligence/run", json={"sync": True, "recent_hours": 1, "baseline_hours": 24})
+        rprint("intelligence:", rep["summary"] if "summary" in rep else {"alerts": len(rep["drift"].get("alerts", [])), "recommendations": len(rep["recommendations"])})
+        # simulated human review of the judge (calibration): reviewers mostly agree with the verifier, with some noise
+        ros = c.get("/rollouts", limit=60)
+        ros = ros.get("items", ros) if isinstance(ros, dict) else ros
+        c.post("/scores/batch", json=[{"name": "human_rating", "source": "human", "rollout_id": r["id"],
+                                       "value": 1.0 if (r.get("total_reward", 0) > 0.5) != (rng.random() < 0.15) else 0.0} for r in ros])
+        c.post("/orgs/current/webhooks", json={"url": "https://example.invalid/saphire-hook", "events": ["job.failed", "gate.decided", "intelligence.alert"],
+                                               "description": "demo webhook (unreachable endpoint; shows retry/delivery log)"})
     rprint("[green]demo complete[/green]")
 
 
@@ -240,6 +260,19 @@ def create_org_cmd(slug: str, name: Optional[str] = None, plan: str = "enterpris
         rprint({"org": org.slug, "plan": org.plan, "admin_api_key": raw, "note": "shown once"})
     finally:
         db.close()
+
+
+@app.command()
+def migrate(revision: str = "head"):
+    """Apply database migrations (Alembic). `saphire serve` also creates missing tables for dev, but production
+    deployments should run this on upgrade."""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(Path(__file__).resolve().parent.parent / "alembic.ini"))
+    cfg.set_main_option("script_location", str(Path(__file__).resolve().parent.parent / "migrations"))
+    command.upgrade(cfg, revision)
+    rprint(f"[green]migrated to {revision}[/green]")
 
 
 @app.command()

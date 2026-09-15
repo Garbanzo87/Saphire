@@ -124,7 +124,11 @@ def _parse_json_checks(text: str, keys: list[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def make_judge(model: Optional[str]) -> Optional[RubricJudge]:
+def make_judge(model: Optional[str]):
     if not model or model == "none":
         return None
+    if model.startswith("rm:"):
+        from .reward_model import RewardModelJudge
+
+        return RewardModelJudge(model)
     return RubricJudge(model)

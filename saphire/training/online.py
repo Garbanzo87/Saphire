@@ -35,7 +35,8 @@ class OnlineLoop:
                  learn_prompt_every: int = 0, weight_update_every: int = 0, weight_update: Optional[Callable[..., dict]] = None,
                  seed: int = 0, on_iteration: Optional[Callable[[dict[str, Any]], None]] = None,
                  on_rollout: Optional[Callable[[Rollout, TaskSpec, list], None]] = None, eval_k: int = 1,
-                 optimize_roles: Optional[list[str]] = None, rollout_backend: Optional[str] = None, rollout_workers: Optional[int] = None):
+                 optimize_roles: Optional[list[str]] = None, rollout_backend: Optional[str] = None, rollout_workers: Optional[int] = None,
+                 learn_tool_descriptions_every: int = 0):
         self.config = config
         self.train_tasks = train_tasks
         self.eval_tasks = eval_tasks
@@ -61,6 +62,7 @@ class OnlineLoop:
         # distributed collection / evaluation (ray | process | thread); artifacts must be on a shared filesystem
         self.rollout_backend = rollout_backend
         self.rollout_workers = rollout_workers
+        self.learn_tool_descriptions_every = learn_tool_descriptions_every
         self.role_routers: dict[str, ToolRouter] = {}
         self.role_exemplars: dict[str, ExemplarStore] = {}
         if config.is_multi_agent:
@@ -152,12 +154,23 @@ class OnlineLoop:
         if self.learn_exemplars and not self.config.is_multi_agent:
             updates["exemplars"] = update_exemplars(rollouts, vdir / "exemplars.json", store=self.exemplars)
             self.config = self.config.model_copy(update={"exemplar_store": updates["exemplars"]["artifact"]})
-        if self.learn_prompt_every and it % self.learn_prompt_every == 0 and not self.config.is_multi_agent:
-            po = optimize_prompt(self.config, self.train_tasks, envs=self.envs, reflection_model=self.config.model if self.config.model.startswith("mock") else self.config.metadata.get("reflection_model", "mock"),
-                                 iterations=2, minibatch=min(8, len(self.train_tasks)), seed=self.rng.randint(0, 10**6), policy_llm=self.llm)
+        if self.learn_prompt_every and it % self.learn_prompt_every == 0:
+            reflection = self.config.model if self.config.model.startswith("mock") else self.config.metadata.get("reflection_model", "mock")
+            po = optimize_prompt(self.config, self.train_tasks, envs=self.envs, reflection_model=reflection, iterations=2,
+                                 minibatch=min(8, len(self.train_tasks)), seed=self.rng.randint(0, 10**6), policy_llm=self.llm,
+                                 target="joint" if self.config.is_multi_agent else "main")
             if po["best_score"] >= po["baseline_score"]:
-                self.config = self.config.model_copy(update={"system_prompt": po["best_prompt"]})
-            updates["prompt"] = {k: v for k, v in po.items() if k != "history"}
+                self.config = AgentConfig.model_validate(po["best_config"])
+            updates["prompt"] = {k: v for k, v in po.items() if k not in ("history", "best_config")}
+        if self.learn_tool_descriptions_every and it % self.learn_tool_descriptions_every == 0:
+            from .tools_v2 import optimize_tool_descriptions
+
+            expected = {t.id: t.expected.get("tools", []) for t in self.train_tasks}
+            overrides = dict(self.config.tool_description_overrides)
+            for env in self.envs.values():
+                overrides.update(optimize_tool_descriptions(env, [r for r in self.buffer if r.env_name == env.name], expected))
+            self.config = self.config.model_copy(update={"tool_description_overrides": overrides})
+            updates["tool_descriptions"] = {"n_overrides": len(overrides)}
         if self.weight_update_every and self.weight_update and it % self.weight_update_every == 0:
             updates["weights"] = self.weight_update(self.buffer, self.config, vdir)
             if updates["weights"].get("model"):

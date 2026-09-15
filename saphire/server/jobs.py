@@ -136,6 +136,11 @@ def run_eval(db: Session, job: D.Job) -> dict[str, Any]:
         db.commit()
         out["gate"] = decision.model_dump()
         out["deployment_id"] = dep.id
+        from .webhooks import deliver
+
+        deliver(project.org_id, "gate.decided", {"deployment_id": dep.id, "agent_id": agent_row.id, "agent_name": agent_row.name,
+                                                 "version": agent_row.version, "passed": decision.passed, "reasons": decision.reasons,
+                                                 "promoted": dep.promoted, "eval_run_id": run.id})
     log("done", 1.0)
     return out
 
@@ -225,13 +230,49 @@ def run_training(db: Session, job: D.Job) -> dict[str, Any]:
                           learn_prompt_every=int(p.get("learn_prompt_every", 0)), weight_update_every=int(p.get("weight_update_every", 0)),
                           weight_update=weight_fn, seed=int(p.get("seed", 0)), on_iteration=_on_iter, on_rollout=_on_rollout,
                           eval_k=int(p.get("eval_k", 1)), optimize_roles=p.get("optimize_roles"),
-                          rollout_backend=p.get("rollout_backend"), rollout_workers=p.get("rollout_workers"))
+                          rollout_backend=p.get("rollout_backend"), rollout_workers=p.get("rollout_workers"),
+                          learn_tool_descriptions_every=int(p.get("learn_tool_descriptions_every", 0)))
         # the loop numbers versions v1..vN internally; align with the project's version counter
         loop.version_no = int(start_version[1:]) - 1
         hist = loop.run(iterations)
         run.output_agent_id = state["last"].id
         run.result = {"iterations": len(hist) - 1, "baseline": hist[0]["eval"], "final": hist[-1]["eval"],
                       "improvement": {k: hist[-1]["eval"].get(k, 0) - hist[0]["eval"].get(k, 0) for k in ("task_success", "tool_selection_f1", "context_preservation")}}
+    elif algo in ("reward_model", "tool_descriptions"):
+        rollouts = S.load_rollouts(db, project.id, agent_name=cfg.name, limit=int(p.get("max_rollouts", 4000)))
+        if not rollouts:
+            raise RuntimeError("no stored rollouts for this agent")
+        if algo == "reward_model":
+            from ..intelligence.report import _human_scores
+            from ..signals.reward_model import RewardModel, labels_from_rollouts
+
+            human = _human_scores(db, [r.id for r in rollouts]) if p.get("use_human_scores", True) else {}
+            xs, ys = labels_from_rollouts(rollouts, human or None)
+            n_val = max(1, len(xs) // 5)
+            rm = RewardModel(seed=int(p.get("seed", 0)))
+            train_metrics = rm.fit(xs[n_val:], ys[n_val:], epochs=int(p.get("epochs", 40)))
+            val_metrics = rm.evaluate(xs[:n_val], ys[:n_val])
+            path = rm.save(art / "reward_model")
+            from ..sdk.artifacts import publish_dir, remap
+
+            mapping = publish_dir(art, f"{project.name}/{cfg.name}/{run.id}/{art.name}")
+            run.result = {"artifact": remap(path, mapping) if mapping else path, "judge_model": f"rm:{remap(path, mapping) if mapping else path}",
+                          "train": train_metrics, "validation": val_metrics, "n_human_labels": len(human)}
+            log(f"reward model: val acc={val_metrics['accuracy']:.2f} auc={val_metrics['auc']:.2f}", 0.9)
+        else:
+            from ..training.tools_v2 import optimize_tool_descriptions, tool_stats
+
+            envs = {e: get_environment(e) for e in {r.env_name for r in rollouts}}
+            expected: dict[str, list[str]] = {}
+            for ds in db.query(D.Dataset).filter_by(project_id=project.id):
+                for t in ds.tasks:
+                    expected[t["id"]] = t.get("expected", {}).get("tools", [])
+            overrides = dict(cfg.tool_description_overrides)
+            for env in envs.values():
+                overrides.update(optimize_tool_descriptions(env, [r for r in rollouts if r.env_name == env.name], expected))
+            a = _new_version(cfg.model_copy(update={"tool_description_overrides": overrides}), "tool_descriptions", agent_row)
+            run.output_agent_id = a.id
+            run.result = {"overrides": overrides, "n_overrides": len(overrides), "tool_stats": tool_stats(rollouts)}
     elif algo in ("router", "exemplars", "signals", "sft", "dpo", "grpo"):
         rollouts = S.load_rollouts(db, project.id, agent_name=cfg.name, limit=int(p.get("max_rollouts", 2000)))
         log(f"loaded {len(rollouts)} stored rollouts for agent '{cfg.name}'", 0.1)
@@ -287,9 +328,11 @@ def run_training(db: Session, job: D.Job) -> dict[str, Any]:
     elif algo == "prompt_opt":
         ds = db.get(D.Dataset, p["train_dataset_id"])
         r = optimize_prompt(cfg, S.tasks_from_dataset(ds), reflection_model=p.get("reflection_model", "mock"),
-                            iterations=int(p.get("iterations", 4)), minibatch=int(p.get("minibatch", 8)), seed=int(p.get("seed", 0)))
-        a = _new_version(cfg.model_copy(update={"system_prompt": r["best_prompt"]}), "prompt_opt", agent_row)
-        run.output_agent_id, run.result = a.id, {k: v for k, v in r.items()}
+                            iterations=int(p.get("iterations", 4)), minibatch=int(p.get("minibatch", 8)), seed=int(p.get("seed", 0)),
+                            target=p.get("target", "joint" if cfg.is_multi_agent else "main"), families=p.get("families"),
+                            max_rollouts=p.get("max_rollouts"), merge_every=int(p.get("merge_every", 3)))
+        a = _new_version(AgentConfig.model_validate(r["best_config"]), "prompt_opt", agent_row)
+        run.output_agent_id, run.result = a.id, {k: v for k, v in r.items() if k != "best_config"}
     else:
         raise ValueError(f"unknown algorithm {algo}")
     run.status, run.finished_at = "succeeded", time.time()
@@ -322,6 +365,53 @@ def _make_weight_update(p: dict[str, Any], log: JobLog):
         return getattr(T, algo)(rows, vdir / algo, model=base, max_steps=int(p.get("max_steps", 20)), lora_r=int(p.get("lora_r", 0)))
 
     return _fn
+
+
+@handler("attribution")
+def run_attribution(db: Session, job: D.Job) -> dict[str, Any]:
+    from ..sdk.attribution import role_ablation, shapley_attribution
+
+    log = JobLog(db, job)
+    p = job.params
+    agent_row = db.get(D.Agent, p["agent_id"])
+    ds = db.get(D.Dataset, p["dataset_id"])
+    cfg = AgentConfig.model_validate(agent_row.config)
+    tasks = S.tasks_from_dataset(ds)
+    envs = {e: get_environment(e) for e in {t.env_name for t in tasks}}
+    kw = dict(k=int(p.get("k", 1)), backend=p.get("rollout_backend"), workers=p.get("rollout_workers"))
+    out: dict[str, Any] = {"agent_id": agent_row.id, "agent_version": agent_row.version, "dataset_id": ds.id, "n_tasks": len(tasks)}
+    log("role ablation", 0.1)
+    out["ablation"] = role_ablation(cfg, tasks, envs, reference_model=p.get("reference_model"), degraded_model=p.get("degraded_model"),
+                                    roles=p.get("roles"), **kw)
+    if p.get("shapley") and p.get("reference_model"):
+        log("shapley", 0.6)
+        out["shapley"] = shapley_attribution(cfg, tasks, envs, reference_model=p["reference_model"], roles=p.get("roles"),
+                                             n_permutations=int(p.get("n_permutations", 6)), **kw)
+    # recommendation: the role with the largest headroom (or Shapley value) is the one to optimise next
+    roles = out["ablation"]["roles"]
+    ranked = sorted(roles.items(), key=lambda kv: -(kv[1].get("headroom") or 0.0))
+    out["recommendation"] = {"optimize_roles": [r for r, e in ranked[:2] if (e.get("headroom") or 0) > 0],
+                             "reason": "largest counterfactual headroom"} if ranked else {}
+    log("done", 1.0)
+    return out
+
+
+@handler("intelligence")
+def run_intelligence_job(db: Session, job: D.Job) -> dict[str, Any]:
+    from ..intelligence.report import build_report, persist_report
+    from .webhooks import deliver
+
+    p = job.params or {}
+    project = db.get(D.Project, job.project_id)
+    rep = build_report(db, project, p.get("agent_name"), float(p.get("recent_hours", 24)), float(p.get("baseline_hours", 168)),
+                       bool(p.get("production_only", False)))
+    row = persist_report(db, project, rep, job_id=job.id)
+    high = [a for a in rep["drift"].get("alerts", []) if a.get("severity") == "high"]
+    if high or not rep["healthy"]:
+        deliver(project.org_id, "intelligence.alert", {"report_id": row.id, "project": project.name, "agent_name": rep["agent_name"],
+                                                       "alerts": high, "top_recommendation": rep["recommendations"][0] if rep["recommendations"] else None})
+    return {"report_id": row.id, "healthy": rep["healthy"], "n_alerts": len(rep["drift"].get("alerts", [])),
+            "n_recommendations": len(rep["recommendations"]), "top": rep["recommendations"][:3]}
 
 
 @handler("retention")
@@ -372,6 +462,19 @@ def execute_job(job_id: str) -> None:
         tracing.flush()  # spans must be persisted before the job is reported as finished
         job.finished_at = time.time()
         db.commit()
+        from . import metrics as MX
+
+        MX.inc("saphire_jobs_total", type=job.type, status=job.status)
+        MX.observe("saphire_job_seconds", (job.finished_at - (job.started_at or job.created_at)), type=job.type)
+        try:
+            from .webhooks import deliver
+
+            proj = db.get(D.Project, job.project_id)
+            deliver(proj.org_id if proj else None, f"job.{job.status}", {"job_id": job.id, "type": job.type, "params": _slim(job.params),
+                                                                       "result": _slim(job.result) if job.status == "succeeded" else None,
+                                                                       "error": job.error[:500] if job.error else None})
+        except Exception:  # noqa: BLE001
+            pass
     finally:
         db.close()
 

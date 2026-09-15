@@ -10,10 +10,15 @@ def api(tmp_path, monkeypatch):
     """A TestClient against a fresh SQLite DB with inline jobs."""
     from saphire.server import config, db
 
-    monkeypatch.setattr(config.settings, "database_url", f"sqlite:///{tmp_path}/test.db")
+    url = os.getenv("SAPHIRE_TEST_DATABASE_URL") or f"sqlite:///{tmp_path}/test.db"
+    monkeypatch.setattr(config.settings, "database_url", url)
     monkeypatch.setattr(config.settings, "inline_jobs", True)
     monkeypatch.setattr(config.settings, "artifacts_dir", str(tmp_path / "artifacts"))
     db.reset_engine()
+    if os.getenv("SAPHIRE_TEST_DATABASE_URL"):  # shared server (Postgres in CI): start every test from an empty schema
+        eng = db.get_engine()
+        db.Base.metadata.drop_all(eng)
+        db.Base.metadata.create_all(eng)
     from fastapi.testclient import TestClient
 
     from saphire.server.main import create_app

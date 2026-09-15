@@ -17,6 +17,10 @@ const nav = [
   ["/datasets", "Datasets"],
   ["/environments", "Environments"],
   ["/jobs", "Jobs"],
+  ["/intelligence", "Intelligence"],
+  ["/attribution", "Attribution"],
+  ["/signals", "Signals"],
+  ["/webhooks", "Webhooks"],
   ["/org", "Organization"],
   ["/audit", "Audit log"],
 ] as const;

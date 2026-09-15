@@ -34,7 +34,13 @@ def create_app() -> FastAPI:
     async def _timing_audit_metering(request: Request, call_next):
         t0 = time.perf_counter()
         resp = await call_next(request)
-        resp.headers["x-process-time-ms"] = f"{(time.perf_counter() - t0) * 1000:.1f}"
+        elapsed = time.perf_counter() - t0
+        resp.headers["x-process-time-ms"] = f"{elapsed * 1000:.1f}"
+        from . import metrics as MX
+
+        route = MX.route_template(request.url.path)
+        MX.inc("saphire_http_requests_total", method=request.method, route=route, status=str(resp.status_code))
+        MX.observe("saphire_http_request_seconds", elapsed, route=route)
         principal = getattr(request.state, "principal", None)
         path = request.url.path
         if principal is not None and path.startswith("/v1"):
@@ -52,6 +58,14 @@ def create_app() -> FastAPI:
     def health():
         return {"status": "ok", "version": __version__, "inline_jobs": settings.inline_jobs}
 
+    @app.get("/metrics", include_in_schema=False)
+    def prometheus_metrics():
+        from fastapi.responses import PlainTextResponse
+
+        from . import metrics as MX
+
+        return PlainTextResponse(MX.render(MX.sample_gauges()), media_type="text/plain; version=0.0.4")
+
     app.include_router(core.router, prefix="/v1", tags=["core"])
     app.include_router(observability.router, prefix="/v1", tags=["observability"])
     app.include_router(runs.router, prefix="/v1", tags=["runs"])
@@ -65,6 +79,12 @@ def create_app() -> FastAPI:
 
     app.include_router(admin.router, prefix="/v1")
     app.include_router(admin.auth_router, prefix="/v1")
+    from .routers import intelligence
+
+    app.include_router(intelligence.router, prefix="/v1", tags=["intelligence"])
+    from .routers import scim
+
+    app.include_router(scim.router)
     return app
 
 

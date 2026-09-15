@@ -51,6 +51,15 @@ class ToolRouter:
         self.b = np.zeros(len(self.tool_names), dtype=np.float32)
         self.trained_examples = 0
         self.history: list[dict] = []
+        self.prior: dict[str, float] = {}  # tool -> reliability prior in [0,1] (1 = fully reliable); from tool_stats
+
+    def set_prior(self, stats: dict[str, dict], error_weight: float = 0.5) -> None:
+        """Penalise unreliable tools: prior = 1 - error_weight*error_rate, shrunk towards 1 for rarely used tools."""
+        self.prior = {}
+        for name, st in stats.items():
+            n = st.get("calls", 0)
+            shrink = n / (n + 5)
+            self.prior[name] = 1.0 - error_weight * st.get("error_rate", 0.0) * shrink
 
     # ---------- scoring ----------
     def lexical_scores(self, query: str, specs: list[ToolSpec]) -> np.ndarray:
@@ -81,6 +90,7 @@ class ToolRouter:
             sc = (1 - self.alpha) * lex[i]
             if learned is not None and s.name in self.index:
                 sc += self.alpha * float(learned[self.index[s.name]]) * len(specs) ** 0.5
+            sc *= self.prior.get(s.name, 1.0)
             scores.append(sc)
         order = np.argsort(-np.asarray(scores), kind="stable")
         excl = set(exclude)
@@ -138,7 +148,7 @@ class ToolRouter:
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(str(path.with_suffix(".npz")), W=self.W, b=self.b)
         meta = {"tool_names": self.tool_names, "dim": self.dim, "alpha": self.alpha,
-                "trained_examples": self.trained_examples, "history": self.history}
+                "trained_examples": self.trained_examples, "history": self.history, "prior": self.prior}
         path.with_suffix(".json").write_text(json.dumps(meta))
         return str(path.with_suffix(".json"))
 
@@ -153,6 +163,7 @@ class ToolRouter:
         r.W, r.b = arr["W"], arr["b"]
         r.trained_examples = meta.get("trained_examples", 0)
         r.history = meta.get("history", [])
+        r.prior = meta.get("prior", {})
         return r
 
 

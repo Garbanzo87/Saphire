@@ -83,6 +83,53 @@ def get_eval(eval_id: str, db: Session = Depends(D.get_db)):
                            "rollouts": [r_.record | {"id": r_.id, "trace_id": r_.trace_id} for r_ in rollouts]}
 
 
+@router.get("/evals/{eval_id}/attribution")
+def eval_attribution(eval_id: str, db: Session = Depends(D.get_db)):
+    """Blame analysis + advantage credit per role from the stored rollouts of an evaluation (multi-agent systems)."""
+    from ...sdk.attribution import advantage_credit, blame
+    from ...sdk.types import Rollout
+
+    run = get_or_404(db, D.EvalRun, eval_id)
+    rows = db.query(D.RolloutRow).filter_by(eval_run_id=run.id).all()
+    ros = [Rollout.model_validate(r.payload) for r in rows]
+    blames = [blame(ro) | {"rollout_id": ro.id, "task_id": ro.task_id} for ro in ros]
+    return {"eval_run_id": run.id, "credit": advantage_credit(ros), "blame": [b for b in blames if b["kind"] != "none"][:200],
+            "by_kind": {k: sum(1 for b in blames if b["kind"] == k) for k in {b["kind"] for b in blames}}}
+
+
+class AttributionIn(BaseModel):
+    agent_id: str
+    dataset_id: str
+    reference_model: Optional[str] = None  # e.g. "openai/gpt-4o" – stronger policy to upgrade roles to
+    degraded_model: Optional[str] = None  # e.g. "mock:error=0.9"
+    roles: Optional[list[str]] = None
+    shapley: bool = True
+    n_permutations: int = 6
+    k: int = 1
+    rollout_backend: Optional[str] = None
+    rollout_workers: Optional[int] = None
+
+
+@router.post("/attribution", status_code=201)
+def create_attribution(body: AttributionIn, project: D.Project = Depends(get_project), p: Principal = Depends(require("write")),
+                       db: Session = Depends(D.get_db)):
+    """Counterfactual attribution job: role ablation (headroom / criticality) and Shapley values of upgrading each role."""
+    agent = get_or_404(db, D.Agent, body.agent_id)
+    ds = get_or_404(db, D.Dataset, body.dataset_id)
+    if not agent.config.get("roles"):
+        raise HTTPException(400, "attribution needs a multi-agent agent (config.roles)")
+    if not (body.reference_model or body.degraded_model):
+        raise HTTPException(400, "provide reference_model and/or degraded_model")
+    check_quota(db, db.get(D.Organization, project.org_id), "jobs_per_day")
+    job = J.submit_job(db, project.id, "attribution", body.model_dump() | {"dataset_name": ds.name, "agent_name": agent.name, "agent_version": agent.version})
+    return D.to_dict(job)
+
+
+@router.get("/attribution")
+def list_attribution(project: D.Project = Depends(get_project), db: Session = Depends(D.get_db)):
+    return [D.to_dict(j) for j in db.query(D.Job).filter_by(project_id=project.id, type="attribution").order_by(D.Job.created_at.desc()).limit(50)]
+
+
 @router.get("/evals/{eval_id}/compare/{other_id}")
 def compare_evals(eval_id: str, other_id: str, db: Session = Depends(D.get_db)):
     a, b = get_or_404(db, D.EvalRun, eval_id), get_or_404(db, D.EvalRun, other_id)
@@ -95,14 +142,14 @@ def compare_evals(eval_id: str, other_id: str, db: Session = Depends(D.get_db)):
 # ---------------- training ----------------
 class TrainingIn(BaseModel):
     agent_id: str
-    algorithm: str = Field(description="online | router | exemplars | prompt_opt | signals | sft | dpo | grpo")
+    algorithm: str = Field(description="online | router | exemplars | prompt_opt | signals | sft | dpo | grpo | reward_model | tool_descriptions")
     params: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post("/training", status_code=201)
 def create_training(body: TrainingIn, project: D.Project = Depends(get_project), db: Session = Depends(D.get_db)):
     agent = get_or_404(db, D.Agent, body.agent_id)
-    if body.algorithm not in ("online", "router", "exemplars", "prompt_opt", "signals", "sft", "dpo", "grpo"):
+    if body.algorithm not in ("online", "router", "exemplars", "prompt_opt", "signals", "sft", "dpo", "grpo", "reward_model", "tool_descriptions"):
         raise HTTPException(400, "unknown algorithm")
     if body.algorithm == "online" and not ({"train_dataset_id", "eval_dataset_id"} <= set(body.params)):
         raise HTTPException(400, "online training needs params.train_dataset_id and params.eval_dataset_id")
@@ -144,11 +191,13 @@ def get_training(run_id: str, db: Session = Depends(D.get_db)):
 
 # ---------------- jobs ----------------
 @router.get("/jobs")
-def list_jobs(status: Optional[str] = None, limit: int = Query(50, le=500), project: D.Project = Depends(get_project),
-              db: Session = Depends(D.get_db)):
+def list_jobs(status: Optional[str] = None, type: Optional[str] = None, limit: int = Query(50, le=500),
+              project: D.Project = Depends(get_project), db: Session = Depends(D.get_db)):
     q = db.query(D.Job).filter_by(project_id=project.id)
     if status:
         q = q.filter_by(status=status)
+    if type:
+        q = q.filter_by(type=type)
     return [D.to_dict(j) for j in q.order_by(D.Job.created_at.desc()).limit(limit).all()]
 
 
@@ -290,6 +339,25 @@ def stop_experiment(exp_id: str, db: Session = Depends(D.get_db)):
     e.status = "stopped"
     db.commit()
     return _exp_summary(e, db)
+
+
+# ---------------- signals: calibration & tool stats ----------------
+@router.get("/signals/calibration")
+def judge_calibration(judge: str = "judge_score", human_name: Optional[str] = None, project: D.Project = Depends(get_project),
+                      db: Session = Depends(D.get_db)):
+    """Agreement / kappa / precision-recall of a judge (or reward model) against human & product scores on the same rollouts."""
+    from ...signals.calibration import calibrate_from_db
+
+    return calibrate_from_db(db, project.id, judge_name=judge, human_name=human_name)
+
+
+@router.get("/signals/tool-stats")
+def tool_statistics(agent_name: Optional[str] = None, limit: int = Query(2000, le=20000), project: D.Project = Depends(get_project),
+                    db: Session = Depends(D.get_db)):
+    from ...training.tools_v2 import tool_stats
+    from .. import service as S
+
+    return tool_stats(S.load_rollouts(db, project.id, agent_name=agent_name, limit=limit))
 
 
 # ---------------- metrics ----------------

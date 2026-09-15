@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:3000"
     # --- limits / retention ---
     rate_limit_rpm: int = 0  # 0 = disabled; org.quotas.requests_per_minute overrides
+    trust_proxy: bool = False  # honour X-Forwarded-For (first hop) for API-key IP allowlists when behind a load balancer
     retention_days: int = 0  # 0 = keep forever; `saphire retention` / retention job deletes older traces & rollouts
     audit_request_bodies: bool = False  # store (redacted, truncated) request bodies in the audit log
 

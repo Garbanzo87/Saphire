@@ -251,7 +251,14 @@ class AgentConfig(BaseModel):
     roles: dict[str, RoleConfig] = Field(default_factory=dict)
     orchestrator_prompt: Optional[str] = None
     orchestrator_tools: list[str] = Field(default_factory=list)  # env tools the orchestrator may call directly
+    tool_description_overrides: dict[str, str] = Field(default_factory=dict)  # learned disambiguation hints per tool
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def apply_overrides(self, specs: list["ToolSpec"]) -> list["ToolSpec"]:
+        if not self.tool_description_overrides:
+            return specs
+        return [s.model_copy(update={"description": self.tool_description_overrides[s.name]}) if s.name in self.tool_description_overrides else s
+                for s in specs]
 
     @property
     def is_multi_agent(self) -> bool:

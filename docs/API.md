@@ -12,7 +12,13 @@ All endpoints under `/v1`, header `x-api-key`, optional `?project=<name>` (auto-
 | `POST /rollouts`, `GET /rollouts`, `GET /rollouts/{id}` | BYO rollouts; stored rollouts with records and payloads |
 | `POST /scores`, `POST /scores/batch`, `GET /scores`, `GET /scores/summary` | signals |
 | `POST /evals`, `GET /evals`, `GET /evals/{id}`, `GET /evals/{a}/compare/{b}` | evaluation runs (async job), comparison |
-| `POST /training`, `GET /training`, `GET /training/{id}` | training runs: `online, router, exemplars, prompt_opt, signals, sft, dpo, grpo` |
+| `POST /training`, `GET /training`, `GET /training/{id}` | training runs: `online, router, exemplars, prompt_opt, signals, sft, dpo, grpo, reward_model, tool_descriptions` |
+| `POST /attribution`, `GET /attribution`, `GET /evals/{id}/attribution` | multi-agent attribution: role ablation + Shapley jobs; per-eval blame / advantage credit |
+| `POST /intelligence/run`, `GET /intelligence/latest`, `GET /intelligence/reports[/{id}]`, `POST /intelligence/mine-tasks`, `POST /intelligence/apply` | production intelligence (see docs/INTELLIGENCE.md) |
+| `GET /signals/calibration?judge=`, `GET /signals/tool-stats?agent_name=` | judge calibration vs human labels; per-tool error/confusion statistics |
+| `GET/POST/DELETE /orgs/current/webhooks[/{id}]`, `/webhooks/events`, `POST .../{id}/test`, `GET .../{id}/deliveries` | HMAC-signed webhooks |
+| `/scim/v2/Users[/{id}]`, `/scim/v2/ServiceProviderConfig` | SCIM 2.0 provisioning (org admin key as bearer) |
+| `GET /metrics` (no `/v1` prefix) | Prometheus text exposition |
 | `GET /jobs`, `GET /jobs/{id}`, `POST /jobs/{id}/cancel` | job queue |
 | `GET /deployments`, `GET /deployments/current`, `POST /deployments/{id}/promote` | gate decisions and promotion |
 | `POST /experiments`, `GET /experiments`, `GET /experiments/{id}`, `GET /experiments/{id}/assign?unit=`, `POST /experiments/{id}/outcomes`, `POST /experiments/{id}/stop` | live A/B |

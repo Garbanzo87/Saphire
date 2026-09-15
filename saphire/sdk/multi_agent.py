@@ -50,6 +50,7 @@ class RolePolicy:
                  router: Optional[ToolRouter] = None, exemplars: Optional[ExemplarStore] = None):
         self.name = name
         self.cfg = cfg
+        self.system = system
         self.model = cfg.model or system.model
         self.llm = llm or get_llm(self.model)
         self.system_prompt = cfg.system_prompt or system.system_prompt
@@ -62,11 +63,13 @@ class RolePolicy:
 
     def tools(self, env: "Environment") -> list[ToolSpec]:
         if self.cfg.tool_names:
-            return env.tools.specs(self.cfg.tool_names)
-        if self.cfg.tool_tags:
+            specs = env.tools.specs(self.cfg.tool_names)
+        elif self.cfg.tool_tags:
             tags = set(self.cfg.tool_tags)
-            return [t for t in env.tools.specs() if tags & set(t.tags)]
-        return env.tools.specs()
+            specs = [t for t in env.tools.specs() if tags & set(t.tags)]
+        else:
+            specs = env.tools.specs()
+        return self.system.apply_overrides(specs)
 
     def exposed(self, specs: list[ToolSpec], query: str) -> list[ToolSpec]:
         if self.top_k and self.top_k < len(specs):

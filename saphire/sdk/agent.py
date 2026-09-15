@@ -39,7 +39,7 @@ class ToolAgent:
         return sp
 
     def exposed_tools(self, env: "Environment", query: str, exclude: list[str] | None = None):
-        specs = env.tools.specs()
+        specs = self.config.apply_overrides(env.tools.specs())
         k = self.config.router_top_k
         if self.router is not None and k and k < len(specs):
             return self.router.rank(query, specs, top_k=k, exclude=exclude or [])

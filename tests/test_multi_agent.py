@@ -99,3 +99,36 @@ def test_server_multi_agent_eval_and_selective_training(api):
     assert tr["status"] == "succeeded" and "customers" in tr["result"]["frozen"]
     out = api.get(f"/v1/agents/{tr['output_agent_id']}").json()
     assert out["config"]["roles"]["orders"]["tool_router"] and not out["config"]["roles"]["customers"]["tool_router"]
+
+
+def test_attribution_functions_and_api(api):
+    from conftest import wait_job
+
+    from saphire.sdk.attribution import advantage_credit, blame, role_ablation, shapley_attribution
+
+    env = get_environment("support_desk")
+    envs = {"support_desk": env}
+    tasks = _tasks(14, 3)
+    cfg = multi_agent_config(model="mock:error=0.3,seed=2")
+    ros = []
+    evaluate(build_agent(cfg), tasks, envs=envs, on_rollout=lambda ro, t, r: ros.append(ro))
+    kinds = {blame(ro)["kind"] for ro in ros}
+    assert kinds & {"wrong_tool", "bad_handoff", "tool_error", "incomplete"}
+    credit = advantage_credit(ros)
+    assert set(credit["roles"]) >= {ORCHESTRATOR, "orders"} and abs(sum(v["fault_share"] for v in credit["roles"].values()) - 1) < 1e-6
+    ab = role_ablation(cfg, tasks, envs, reference_model="mock", degraded_model="mock:error=0.9", roles=[ORCHESTRATOR, "orders"])
+    assert ab["roles"][ORCHESTRATOR]["headroom"] > 0 and "criticality" in ab["roles"]["orders"]
+    sh = shapley_attribution(cfg, tasks, envs, reference_model="mock", roles=[ORCHESTRATOR, "orders", "tickets"], exact=True)
+    assert abs(sum(sh["shapley"].values()) - (sh["all_upgraded"] - sh["baseline"])) < 1e-9
+    # API: cheap attribution on a stored eval + counterfactual job
+    a = api.post("/v1/agents", json={"config": cfg.model_dump()}).json()
+    ds = api.post("/v1/datasets", json={"name": "d", "suite": "tool_selection", "n_per_env": 6, "seed": 1}).json()
+    run = api.post("/v1/evals", json={"agent_id": a["id"], "dataset_id": ds["id"]}).json()
+    wait_job(api, run["job_id"])
+    att = api.get(f"/v1/evals/{run['id']}/attribution").json()
+    assert ORCHESTRATOR in att["credit"]["roles"] and "by_kind" in att
+    job = api.post("/v1/attribution", json={"agent_id": a["id"], "dataset_id": ds["id"], "reference_model": "mock", "degraded_model": "mock:error=0.9",
+                                             "roles": [ORCHESTRATOR, "orders"], "n_permutations": 2}).json()
+    j = wait_job(api, job["id"])
+    assert "shapley" in j["result"] and j["result"]["recommendation"]["optimize_roles"]
+    assert api.get("/v1/attribution").json()[0]["id"] == job["id"]

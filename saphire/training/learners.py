@@ -26,6 +26,9 @@ def train_router(rollouts: Iterable[Rollout], envs: dict[str, Environment], out_
         router = ToolRouter(names)
     ex = router_examples(rollouts)
     stats = router.fit(ex, epochs=epochs, lr=lr)
+    from .tools_v2 import tool_stats
+
+    router.set_prior(tool_stats(rollouts))
     # held-in top-k accuracy per env for reporting
     acc = {}
     for env_name, env in envs.items():

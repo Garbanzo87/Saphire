@@ -74,12 +74,19 @@ def hash_key(raw: str) -> str:
 
 
 def create_api_key(db: Session, org: D.Organization, name: str, role: str = "member", created_by: str = "",
-                   expires_in_days: Optional[int] = None) -> tuple[D.ApiKey, str]:
+                   expires_in_days: Optional[int] = None, allowed_ips: Optional[list[str]] = None) -> tuple[D.ApiKey, str]:
     if role not in ("viewer", "member", "admin", "owner"):
         raise HTTPException(400, "invalid role")
+    import ipaddress
+
+    for cidr in allowed_ips or []:
+        try:
+            ipaddress.ip_network(cidr, strict=False)
+        except ValueError as e:
+            raise HTTPException(400, f"invalid IP/CIDR {cidr}") from e
     raw = "sk_saph_" + secrets.token_urlsafe(32)
     row = D.ApiKey(id=D.uid("key"), org_id=org.id, name=name, key_hash=hash_key(raw), prefix=raw[:12], role=role, created_by=created_by,
-                   expires_at=(time.time() + expires_in_days * 86400) if expires_in_days else None)
+                   allowed_ips=allowed_ips or [], expires_at=(time.time() + expires_in_days * 86400) if expires_in_days else None)
     db.add(row)
     db.commit()
     return row, raw
@@ -171,6 +178,8 @@ async def get_principal(request: Request, x_api_key: Optional[str] = Header(defa
             row = db.query(D.ApiKey).filter_by(key_hash=hash_key(key)).one_or_none()
             if row is None or row.revoked_at or (row.expires_at and row.expires_at < time.time()):
                 raise HTTPException(401, "invalid, revoked or expired API key")
+            if row.allowed_ips and not _ip_allowed(client_ip(request), row.allowed_ips):
+                raise HTTPException(403, "API key not allowed from this IP address")
             row.last_used_at = time.time()
             db.commit()
             org = db.get(D.Organization, row.org_id)
@@ -196,6 +205,30 @@ async def get_principal(request: Request, x_api_key: Optional[str] = Header(defa
     current_principal.set(principal)
     _rate_limit(principal)
     return principal
+
+
+def client_ip(request: Request) -> str:
+    if settings.trust_proxy:
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd:
+            return fwd.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
+def _ip_allowed(ip: str, allowed: list[str]) -> bool:
+    import ipaddress
+
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for cidr in allowed:
+        try:
+            if addr in ipaddress.ip_network(cidr, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def require(permission: str):
@@ -286,11 +319,22 @@ def check_quota(db: Session, org: Optional[D.Organization], metric: str, add: fl
     if metric == "rollouts_per_month" and q.get(metric):
         used = usage_summary(db, org.id, 30)["totals"].get("rollouts", 0.0)
         if used + add > q[metric]:
+            _quota_event(org, metric, used, q[metric])
             raise HTTPException(402, f"quota exceeded: {int(used)}/{q[metric]} rollouts in the last 30 days (plan {org.plan})")
     if metric == "jobs_per_day" and q.get(metric):
         used = usage_summary(db, org.id, 1)["totals"].get("jobs", 0.0)
         if used + add > q[metric]:
+            _quota_event(org, metric, used, q[metric])
             raise HTTPException(402, f"quota exceeded: {int(used)}/{q[metric]} jobs today (plan {org.plan})")
+
+
+def _quota_event(org: D.Organization, metric: str, used: float, limit: Any) -> None:
+    try:
+        from .webhooks import deliver
+
+        deliver(org.id, "quota.exceeded", {"metric": metric, "used": used, "limit": limit, "plan": org.plan})
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------

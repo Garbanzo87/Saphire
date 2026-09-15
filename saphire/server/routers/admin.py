@@ -165,6 +165,7 @@ class KeyIn(BaseModel):
     name: str
     role: str = "member"
     expires_in_days: Optional[int] = None
+    allowed_ips: list[str] = Field(default_factory=list)  # IPs or CIDRs; empty = any
 
 
 @router.get("/orgs/current/keys", tags=["orgs"])
@@ -179,7 +180,7 @@ def create_key(body: KeyIn, p: Principal = Depends(require("keys")), db: Session
     o = _org(p, db)
     if not p.has_role(body.role) and not p.is_superadmin:
         raise HTTPException(403, "cannot create a key with a role above your own")
-    row, raw = create_api_key(db, o, body.name, body.role, created_by=p.actor_id, expires_in_days=body.expires_in_days)
+    row, raw = create_api_key(db, o, body.name, body.role, created_by=p.actor_id, expires_in_days=body.expires_in_days, allowed_ips=body.allowed_ips)
     audit(db, p, "keys.create", "api_key", row.id, details={"name": row.name, "role": row.role, "prefix": row.prefix})
     return {k: v for k, v in D.to_dict(row).items() if k != "key_hash"} | {"key": raw, "note": "store this key now; it is not shown again"}
 

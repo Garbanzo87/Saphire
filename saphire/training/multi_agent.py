@@ -61,6 +61,9 @@ def train_roles(config: AgentConfig, rollouts: list[Rollout], envs: dict[str, En
                 router = ToolRouter(names)
             ex = router_examples(rollouts, role=role)
             fit = router.fit(ex, epochs=epochs)
+            from .tools_v2 import tool_stats
+
+            router.set_prior(tool_stats(rollouts))
             path = router.save(out_dir / f"router_{role}")
             routers[role] = ToolRouter.load(path)
             rrep["router"] = {"artifact": path, "examples": len(ex), "positives": sum(1 for e in ex if e[2] > 0), "fit": fit}

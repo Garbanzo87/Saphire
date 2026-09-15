@@ -57,6 +57,9 @@ def ingest_spans(db: Session, project: D.Project, spans: list[dict[str, Any]]) -
     if upd_span_rows:
         db.bulk_update_mappings(D.Span, upd_span_rows)
     db.commit()
+    from . import metrics as MX
+
+    MX.inc("saphire_spans_ingested_total", len(spans))
     return {"traces": len(by_trace), "spans": len(spans)}
 
 
@@ -81,6 +84,9 @@ def persist_rollout(db: Session, project: D.Project, rollout: Rollout, task: Tas
 
     meter(db, project.org_id, "rollouts", 1)
     meter(db, project.org_id, "tokens", float(rollout.usage.total_tokens))
+    from . import metrics as MX
+
+    MX.inc("saphire_rollouts_persisted_total", env=rollout.env_name)
     return row
 
 

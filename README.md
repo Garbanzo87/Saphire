@@ -72,14 +72,15 @@ docker compose exec api saphire demo --host http://api:8000
 | **SDK** | `saphire.sdk` | OpenTelemetry tracing (`tracing.init/span/trace/tool`), `ToolRegistry` (Python functions → JSON-schema tools; MCP adapter), LLM providers (LiteLLM, local HF checkpoints, deterministic mock), the generic `ToolAgent` loop with simulated multi-turn users, `RolloutRecorder` for bring-your-own agents, learnable `ToolRouter`, `ExemplarStore`, `SaphireClient`. |
 | **Environments** | `saphire.environments` | `Environment` abstraction (tools + per-rollout world state + task generator + simulated user + verifier). Built-ins: `support_desk` (30 tools, 7 task families incl. multi-turn and 6-step workflows) and `data_ops`. |
 | **Connectors** | `saphire.connectors` | Build environments from **your** systems: `SQLConnector` (any SQLAlchemy DB), `OpenAPIConnector` (REST specs), `FileDataConnector` (CSV/JSON exports → safe simulated copies), MCP servers, `DataEnvironment` + generic `TaskVerifier`. |
-| **Signals** | `saphire.signals` | Rollouts + rewards → datasets: router examples, SFT pairs, DPO preference pairs, GRPO prompts with replayable prefixes, step-reward tables. Rubric **LLM-as-judge** (boolean checks over trace evidence) and pairwise judge. |
+| **Signals** | `saphire.signals` | Rollouts + rewards → datasets: router examples, SFT pairs, DPO preference pairs, GRPO prompts with replayable prefixes, step-reward tables. Rubric **LLM-as-judge** (boolean checks over trace evidence), pairwise judge, trainable **reward model** (`rm:` judge) and judge **calibration** against human labels. |
 | **Training** | `saphire.training` | `OnlineLoop` (collect → verify → update → evaluate, versioned artifacts), router/exemplar learners, GEPA-style reflective `optimize_prompt`, TRL trainers `sft` / `dpo` / `grpo` (GRPO reward = replay the action in the environment). |
 | **Evaluation** | `saphire.evaluation` | Runner with concurrency, `k` trials, pass@k / pass^k / consistency, latency percentiles, throughput, tokens; suites (`tool_selection`, `context_preservation`, `long_horizon`, `cross_env`, `full`); bootstrap CIs, permutation tests, `GatePolicy` deployment gates. |
 | **Server** | `saphire.server` | FastAPI + SQLAlchemy (SQLite dev / Postgres prod), DB-backed job queue with `saphire worker`, REST API for projects, agents (versions, promote), datasets, traces/spans ingest, rollouts, scores, evals, training runs, deployments, A/B experiments, metrics time series. |
-| **Dashboard** | `frontend/` | Next.js 14 + Tailwind + Recharts: overview with improvement-over-time charts, agents, trace waterfall, rollouts/conversations, evals (+compare), training runs (+iteration charts), deployments/gates, experiments, jobs. |
-| **Multi-agent** | `saphire.sdk.multi_agent`, `saphire.training.multi_agent` | Orchestrator + specialist roles with hand-off tools, per-role steps/credit assignment, **selective optimisation** (`optimize_roles`) that trains chosen roles and freezes the rest. |
+| **Dashboard** | `frontend/` | Next.js 14 + Tailwind + Recharts: overview with improvement-over-time charts, agents, trace waterfall, rollouts/conversations, evals (+compare, blame), training runs (+iteration charts), deployments/gates, experiments, jobs, intelligence, attribution, signals (calibration / tool stats), webhooks, org, audit. |
+| **Multi-agent** | `saphire.sdk.multi_agent`, `saphire.training.multi_agent` | Orchestrator + specialist roles with hand-off tools, per-role steps/credit assignment, **selective optimisation** (`optimize_roles`) that trains chosen roles and freezes the rest, joint multi-role prompt optimisation. |
 | **Distributed** | `saphire.distributed` | Ray / process / thread rollout engine for collection and evaluation, environment & reward server for remote trainers, verl dataset export + reward function, OpenRLHF agent loop. |
-| **Enterprise** | `saphire.server.auth`, `routers/admin.py` | Organizations, hashed org API keys, OIDC SSO + JWT sessions, RBAC (viewer/member/admin/owner), audit log, usage metering, plans/quotas, rate limits, retention. |
+| **Enterprise** | `saphire.server.auth`, `routers/admin.py`, `routers/scim.py` | Organizations, hashed org API keys (IP allowlists), OIDC SSO + JWT sessions, SCIM 2.0 provisioning, RBAC (viewer/member/admin/owner), audit log, usage metering, plans/quotas, rate limits, HMAC-signed webhooks, Prometheus `/metrics`, Alembic migrations, retention. |
+| **Intelligence** | `saphire.intelligence`, `saphire.sdk.attribution` | Production drift detection, failure clustering, eval-coverage gaps, task mining from real traffic, prioritised recommendations with one-click apply; multi-agent attribution (blame, advantage credit, role ablation, Shapley). |
 | **Ops** | `Dockerfile`, `docker-compose.yml`, `deploy/helm`, `deploy/k8s`, `.github/workflows/ci.yml` | Containers, compose stack, Helm chart (HPA, KEDA worker autoscaling, retention CronJob, env server), S3 artifact store, benchmark harness (`saphire bench`), CI. |
 
 ---
@@ -184,7 +185,7 @@ saphire retention [--days N] [--dry-run]      purge data outside the retention w
 ## Tests
 
 ```bash
-pytest -q -m "not slow"     # 60+ tests: SDK, environments, signals, training, multi-agent, distributed, API/jobs, tenancy/RBAC/audit, scale (~45 s)
+pytest -q -m "not slow"     # 76 tests: SDK, environments, signals, training, multi-agent, distributed, API/jobs, tenancy/RBAC/audit, intelligence, attribution, SCIM, migrations, scale (~50 s)
 pytest -q -m slow           # TRL SFT/DPO/GRPO smoke on a tiny model (CPU, ~1 min, needs saphire[train])
 ```
 
@@ -192,6 +193,6 @@ pytest -q -m slow           # TRL SFT/DPO/GRPO smoke on a tiny model (CPU, ~1 mi
 
 Saphire is a working, tested platform with no production tenant yet. Known gaps are tracked in
 [docs/METIS_COMPARISON.md](docs/METIS_COMPARISON.md#capability-gaps): multi-node verl/OpenRLHF runs are integrated but not
-executed in CI (GPUs); SCIM/billing/SOC 2 evidence are not included; and — most importantly — there is **no customer evidence**:
+executed in CI (GPUs); billing/SOC 2 evidence are not included; and — most importantly — there is **no customer evidence**:
 [docs/PILOT_PLAYBOOK.md](docs/PILOT_PLAYBOOK.md) is the procedure for earning it from the platform's own records. Everything in the repo is Apache-2.0 and depends only on
 permissively licensed OSS (FastAPI, SQLAlchemy, OpenTelemetry, LiteLLM, TRL/PEFT/transformers, MCP SDK, Next.js, Recharts).

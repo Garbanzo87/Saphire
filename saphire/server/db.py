@@ -68,6 +68,7 @@ class ApiKey(Base):
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     prefix: Mapped[str] = mapped_column(String(16))
     role: Mapped[str] = mapped_column(String(16), default="member")
+    allowed_ips: Mapped[list] = mapped_column(JSON, default=list)  # CIDRs / IPs; [] = any
     created_by: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[float] = mapped_column(Float, default=now)
     last_used_at: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -103,6 +104,52 @@ class UsageCounter(Base):
     metric: Mapped[str] = mapped_column(String(48), index=True)
     day: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
     value: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class Webhook(Base):
+    """Org-level outbound webhooks (HMAC-SHA256 signed) for job, gate, quota and intelligence events."""
+
+    __tablename__ = "webhooks"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    url: Mapped[str] = mapped_column(String(1000))
+    secret: Mapped[str] = mapped_column(String(128))
+    events: Mapped[list] = mapped_column(JSON, default=list)  # [] = all
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    description: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[float] = mapped_column(Float, default=now)
+
+
+class WebhookDelivery(Base):
+    __tablename__ = "webhook_deliveries"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    webhook_id: Mapped[str] = mapped_column(String(64), index=True)
+    event: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    status_code: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[float] = mapped_column(Float, default=now)
+
+
+class IntelligenceReport(Base):
+    """Snapshot of production intelligence for a project (drift, failure clusters, coverage, recommendations)."""
+
+    __tablename__ = "intelligence_reports"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    agent_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    recent_hours: Mapped[float] = mapped_column(Float, default=24)
+    baseline_hours: Mapped[float] = mapped_column(Float, default=168)
+    n_recent: Mapped[int] = mapped_column(Integer, default=0)
+    n_baseline: Mapped[int] = mapped_column(Integer, default=0)
+    healthy: Mapped[bool] = mapped_column(Boolean, default=True)
+    drift: Mapped[dict] = mapped_column(JSON, default=dict)
+    failures: Mapped[dict] = mapped_column(JSON, default=dict)
+    coverage: Mapped[dict] = mapped_column(JSON, default=dict)
+    recommendations: Mapped[list] = mapped_column(JSON, default=list)
+    job_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[float] = mapped_column(Float, default=now, index=True)
 
 
 class Project(Base):

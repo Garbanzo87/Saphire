@@ -47,5 +47,20 @@ saphire create-org acme --plan enterprise --owner-email cto@acme.com --allowed-d
 # prints a one-time admin API key for the org
 ```
 
+## SCIM 2.0 provisioning
+Point Okta / Entra ID / OneLogin at `https://<host>/scim/v2` with an **admin** org API key as the bearer token. Supported:
+`GET/POST /Users` (filter `userName eq "..."`), `GET/PUT/PATCH/DELETE /Users/{id}`, `ServiceProviderConfig`. Deactivating or
+deleting a user removes its membership; the initial role comes from `org.settings.default_role` (default `member`) or the
+SCIM `roles` attribute (`viewer|member|admin`). Every operation is audited.
+
+## API-key IP allowlists
+`POST /v1/orgs/current/keys` accepts `allowed_ips: ["203.0.113.0/24", "198.51.100.7"]`; requests from other addresses get 403
+(behind a load balancer set `SAPHIRE_TRUST_PROXY=1` so the first `X-Forwarded-For` hop is used).
+
+## Webhooks, metrics, migrations
+HMAC-signed webhooks with a delivery log (`/v1/orgs/current/webhooks`, see docs/INTELLIGENCE.md), Prometheus text exposition at
+`GET /metrics` (HTTP latency histograms, jobs, rollouts, spans, queue gauges), Alembic migrations (`saphire migrate` /
+`alembic upgrade head`; CI runs the schema and the full test-suite against Postgres 16).
+
 ## Not included (yet)
-SCIM provisioning, per-project roles, customer-managed encryption keys, IP allow-lists, SOC 2 evidence collection.
+Per-project roles, customer-managed encryption keys, billing integration, SOC 2 evidence collection.

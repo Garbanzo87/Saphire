@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { fetcher, q, type Comparison, type EvalDetail, type EvalRun, type Metrics, type RoleMetrics } from "@/lib/api";
+import { fetcher, q, type Comparison, type EvalAttribution, type EvalDetail, type EvalRun, type Metrics, type RoleMetrics } from "@/lib/api";
 import { delta, isActive, ms, num, pct, pval, ts } from "@/lib/format";
 import { JsonView } from "@/components/JsonView";
 import { MetricsGrid } from "@/components/MetricsGrid";
@@ -44,6 +44,77 @@ function PerRoleCredit({ byRole }: { byRole: Record<string, RoleMetrics> }) {
           </table>
         </div>
         <MetricBarChart data={chart} xKey="role" series={[{ key: "step_reward", label: "step reward" }]} height={220} />
+      </div>
+    </Panel>
+  );
+}
+
+function BlameCredit({ id }: { id: string }) {
+  const { data, error } = useSWR<EvalAttribution>(`/v1/evals/${id}/attribution`, fetcher, { shouldRetryOnError: false });
+  if (error) return null; // 4xx: no rollouts / not applicable — hide silently
+  if (!data) return null;
+  const roles = Object.entries(data.credit?.roles || {}).sort((a, b) => b[1].fault_share - a[1].fault_share);
+  if (roles.length === 0 && data.blame.length === 0) return null;
+  const chart = roles.map(([role, m]) => ({ role, fault_share: m.fault_share, mistake_rate: m.mistake_rate }));
+  const byKind = Object.entries(data.by_kind || {}).sort((a, b) => b[1] - a[1]);
+  return (
+    <Panel
+      title="Blame & advantage credit"
+      actions={
+        <span className="text-[12px] text-[var(--muted)]">
+          {data.credit.n_failed} / {data.credit.n_rollouts} rollouts failed
+          {byKind.length > 0 && <> · {byKind.map(([k, n]) => <span key={k} className="ml-1.5"><Chip status={k === "none" ? "ok" : "failed"}>{k} ×{n}</Chip></span>)}</>}
+        </span>
+      }
+    >
+      <div className="space-y-4">
+        <div className="space-y-4">
+          <div className="overflow-x-auto">
+            <table className="tbl">
+              <thead><tr><th>Role</th><th>Rollouts</th><th>First faults</th><th>Fault share</th><th>Mistake rate</th><th>Success clean</th><th>Success faulty</th><th>Advantage</th><th>Fault kinds</th></tr></thead>
+              <tbody>
+                {roles.map(([role, m]) => (
+                  <tr key={role}>
+                    <td className="font-medium">{role}</td>
+                    <td className="tabular-nums">{m.rollouts}</td>
+                    <td className="tabular-nums">{m.first_faults}</td>
+                    <td className={`tabular-nums ${m.fault_share > 0.5 ? "text-rose-300" : ""}`}>{pct(m.fault_share)}</td>
+                    <td className="tabular-nums">{pct(m.mistake_rate)}</td>
+                    <td className="tabular-nums">{pct(m.success_when_clean)}</td>
+                    <td className="tabular-nums">{pct(m.success_when_faulty)}</td>
+                    <td className={`tabular-nums ${(m.advantage ?? 0) > 0 ? "text-emerald-300" : ""}`}>{pct(m.advantage)}</td>
+                    <td>
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(m.fault_kinds || {}).map(([k, n]) => <Chip key={k} status="4xx">{k} ×{n}</Chip>)}
+                        {Object.keys(m.fault_kinds || {}).length === 0 && <span className="text-[var(--muted)]">–</span>}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {chart.length > 0 && <MetricBarChart data={chart} xKey="role" series={[{ key: "fault_share", label: "fault share" }, { key: "mistake_rate", label: "mistake rate" }]} height={180} />}
+        </div>
+        {data.blame.length > 0 && (
+          <div className="max-h-[20rem] overflow-auto">
+            <table className="tbl">
+              <thead><tr><th>Rollout</th><th>Role</th><th>Step</th><th>Tool</th><th>Kind</th><th>Detail</th></tr></thead>
+              <tbody>
+                {data.blame.map((b, i) => (
+                  <tr key={`${b.rollout_id}-${i}`}>
+                    <td><IdLink href={`/rollouts/detail?id=${b.rollout_id}`} id={b.rollout_id} n={20} /></td>
+                    <td>{b.role}</td>
+                    <td className="tabular-nums">{b.step_index ?? <span className="text-[var(--muted)]">–</span>}</td>
+                    <td className="mono text-[12px]">{b.tool || <span className="text-[var(--muted)]">–</span>}</td>
+                    <td><Chip status={b.kind === "tool_error" ? "failed" : "4xx"}>{b.kind}</Chip></td>
+                    <td className="max-w-[28rem] truncate text-[12px] text-[var(--muted)]" title={b.detail}>{b.detail || "–"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </Panel>
   );
@@ -158,6 +229,7 @@ function EvalView() {
                 </Panel>
               )}
               {e.by_role && Object.keys(e.by_role).length > 0 && <PerRoleCredit byRole={e.by_role} />}
+              {e.status === "succeeded" && <BlameCredit id={e.id} />}
               <div className="grid gap-4 xl:grid-cols-3">
                 <Breakdown title="By family" data={e.by_family} />
                 <Breakdown title="By environment" data={e.by_env} />
